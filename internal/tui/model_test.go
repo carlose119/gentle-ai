@@ -15,6 +15,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/opencode"
 	"github.com/gentleman-programming/gentle-ai/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/internal/planner"
+	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/tui/screens"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
@@ -2214,7 +2215,7 @@ func TestDeleteResult_EnterRefreshesAndReturnsToBackups(t *testing.T) {
 // detection-driven TUI preselection silently dropped it.
 func TestPreselectedAgents_CodexIsIncludedWhenPresent(t *testing.T) {
 	detection := makeDetectionWithAgents("codex")
-	selected := preselectedAgents(detection)
+	selected := preselectedAgents(detection, state.InstallState{})
 
 	found := false
 	for _, id := range selected {
@@ -2684,7 +2685,7 @@ func TestPreselectedAgents_AllSixAgentsMappedCorrectly(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.configAgent, func(t *testing.T) {
 			detection := makeDetectionWithAgents(tt.configAgent)
-			selected := preselectedAgents(detection)
+			selected := preselectedAgents(detection, state.InstallState{})
 
 			found := false
 			for _, id := range selected {
@@ -2703,6 +2704,113 @@ func TestPreselectedAgents_AllSixAgentsMappedCorrectly(t *testing.T) {
 					len(selected), tt.configAgent, selected)
 			}
 		})
+	}
+}
+
+// ─── agentsToManage / preselectedAgents — state wins over detection ─────────
+
+// TestAgentsToManage_StateTakesPriorityOverDetection verifies the core contract:
+// when state.json is populated, it overrides filesystem detection for TUI pre-selection.
+func TestAgentsToManage_StateTakesPriorityOverDetection(t *testing.T) {
+	tests := []struct {
+		name        string
+		stateAgents []string       // InstalledAgents from state.json
+		detectedIDs []model.AgentID // agents detected on filesystem
+		want        []model.AgentID
+		desc        string
+	}{
+		{
+			name:        "empty state falls back to filesystem detection",
+			stateAgents: nil,
+			detectedIDs: []model.AgentID{model.AgentClaudeCode, model.AgentGeminiCLI},
+			want:        []model.AgentID{model.AgentClaudeCode, model.AgentGeminiCLI},
+			desc:        "first-time install: state.json absent, filesystem detection is the source",
+		},
+		{
+			name:        "state with 2 agents wins when filesystem has 5",
+			stateAgents: []string{string(model.AgentClaudeCode), string(model.AgentOpenCode)},
+			detectedIDs: []model.AgentID{
+				model.AgentClaudeCode,
+				model.AgentOpenCode,
+				model.AgentGeminiCLI,
+				model.AgentCursor,
+				model.AgentCodex,
+			},
+			want: []model.AgentID{model.AgentClaudeCode, model.AgentOpenCode},
+			desc: "state.json wins: only persisted agents are returned, not all 5 detected",
+		},
+		{
+			name:        "explicit empty installed_agents produces empty list",
+			stateAgents: []string{},
+			detectedIDs: []model.AgentID{model.AgentClaudeCode, model.AgentGeminiCLI},
+			want:        []model.AgentID{model.AgentClaudeCode, model.AgentGeminiCLI},
+			desc:        "empty slice in state.json is treated as no state (falls back to detection)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installState := state.InstallState{InstalledAgents: tt.stateAgents}
+			got := agentsToManage(installState, tt.detectedIDs)
+
+			if len(got) != len(tt.want) {
+				t.Fatalf("%s\nagentsToManage() returned %d agents, want %d\ngot:  %v\nwant: %v",
+					tt.desc, len(got), len(tt.want), got, tt.want)
+			}
+			wantSet := make(map[model.AgentID]bool, len(tt.want))
+			for _, id := range tt.want {
+				wantSet[id] = true
+			}
+			for _, id := range got {
+				if !wantSet[id] {
+					t.Errorf("%s\nagentsToManage() returned unexpected agent %q; want %v",
+						tt.desc, id, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestPreselectedAgents_StateWinsOverDetection verifies that when a populated
+// InstallState is passed to preselectedAgents, it returns only the persisted
+// agents — not all detected config dirs.
+func TestPreselectedAgents_StateWinsOverDetection(t *testing.T) {
+	// 5 agents "detected" on filesystem.
+	detection := makeDetectionWithAgents("claude-code", "opencode", "gemini-cli", "cursor", "codex")
+
+	// state.json only lists 1 agent (the user's deliberate selection).
+	installState := state.InstallState{
+		InstalledAgents: []string{string(model.AgentClaudeCode)},
+	}
+
+	selected := preselectedAgents(detection, installState)
+
+	if len(selected) != 1 {
+		t.Fatalf("preselectedAgents() returned %d agents with populated state, want 1; got %v", len(selected), selected)
+	}
+	if selected[0] != model.AgentClaudeCode {
+		t.Errorf("preselectedAgents() returned %q, want %q", selected[0], model.AgentClaudeCode)
+	}
+}
+
+// TestNewModel_StateAgentsArePreselected verifies that NewModel uses the
+// supplied InstallState for pre-selection instead of detection.
+func TestNewModel_StateAgentsArePreselected(t *testing.T) {
+	// Filesystem: 3 agents detected.
+	detection := makeDetectionWithAgents("claude-code", "gemini-cli", "cursor")
+
+	// state.json: only 1 agent.
+	installState := state.InstallState{
+		InstalledAgents: []string{string(model.AgentGeminiCLI)},
+	}
+
+	m := NewModel(detection, "dev", installState)
+
+	if len(m.Selection.Agents) != 1 {
+		t.Fatalf("NewModel Selection.Agents = %v, want [%s]", m.Selection.Agents, model.AgentGeminiCLI)
+	}
+	if m.Selection.Agents[0] != model.AgentGeminiCLI {
+		t.Errorf("Selection.Agents[0] = %q, want %q", m.Selection.Agents[0], model.AgentGeminiCLI)
 	}
 }
 

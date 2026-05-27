@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/internal/model"
+	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
 )
@@ -1415,6 +1417,109 @@ func TestEnumerateFilesInDir_CaseInsensitiveExclude(t *testing.T) {
 	}
 	if _, ok := pathSet[mixedDir]; ok {
 		t.Errorf("mixed-case 'Cache' dir should be excluded by lowercase 'cache' key: %q", mixedDir)
+	}
+}
+
+// --- Phase 4: state.json-driven backup scope (issues #114, #354) ---
+
+// TestConfigPathsForBackup_StateWinsOverFilesystem verifies that when state.json
+// lists a subset of agents, configPathsForBackup backs up only those agents'
+// config paths — NOT all detected config dirs.
+//
+// Scenario: state.json has 1 agent (claude-code); filesystem also has gemini-cli.
+// Backup must include claude-code paths but NOT gemini-cli paths.
+func TestConfigPathsForBackup_StateWinsOverFilesystem(t *testing.T) {
+	homeDir := t.TempDir()
+
+	// Create both agent config dirs on disk (simulates filesystem detection).
+	claudeDir := filepath.Join(homeDir, ".claude")
+	geminiDir := filepath.Join(homeDir, ".gemini")
+	for _, dir := range []string{claudeDir, geminiDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	// Write a managed claude-code config file that should be backed up.
+	claudeSettings := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(claudeSettings, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write %s: %v", claudeSettings, err)
+	}
+	// Write a gemini config file that should NOT be backed up (not in state).
+	geminiSettings := filepath.Join(geminiDir, "settings.json")
+	if err := os.WriteFile(geminiSettings, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write %s: %v", geminiSettings, err)
+	}
+
+	// Write state.json with only claude-code — this is the user's explicit selection.
+	if err := state.Write(homeDir, state.InstallState{
+		InstalledAgents: []string{string(model.AgentClaudeCode)},
+	}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	paths := configPathsForBackup(homeDir)
+	pathSet := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		pathSet[p] = struct{}{}
+	}
+
+	// Gemini settings must NOT appear in backup — not in state.json.
+	if _, ok := pathSet[geminiSettings]; ok {
+		t.Errorf("configPathsForBackup included gemini-cli settings %q which is not in state.json; state.json should be the source of truth", geminiSettings)
+	}
+}
+
+// TestConfigPathsForBackup_FallsBackToFilesystemWhenNoState verifies that when
+// state.json does not exist, configPathsForBackup falls back to filesystem
+// detection — preserving the first-time install behavior.
+func TestConfigPathsForBackup_FallsBackToFilesystemWhenNoState(t *testing.T) {
+	homeDir := t.TempDir()
+
+	// Create a claude config dir on disk — no state.json.
+	claudeDir := filepath.Join(homeDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", claudeDir, err)
+	}
+	claudeSettings := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(claudeSettings, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write %s: %v", claudeSettings, err)
+	}
+
+	// No state.json written — simulates fresh install.
+	paths := configPathsForBackup(homeDir)
+
+	// Result must not be nil (empty slice is fine, but nil would panic callers).
+	if paths == nil {
+		t.Error("configPathsForBackup returned nil when state.json missing, want non-nil")
+	}
+}
+
+// TestConfigPathsForBackup_EmptyStateAgentsFallsBackToFilesystem verifies that
+// state.json with an empty InstalledAgents list is treated the same as a missing
+// state.json — filesystem detection is used as fallback.
+func TestConfigPathsForBackup_EmptyStateAgentsFallsBackToFilesystem(t *testing.T) {
+	homeDir := t.TempDir()
+
+	// Write state.json with an empty agent list.
+	if err := state.Write(homeDir, state.InstallState{
+		InstalledAgents: []string{},
+	}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	// Create a claude config dir on disk.
+	claudeDir := filepath.Join(homeDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", claudeDir, err)
+	}
+	claudeSettings := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(claudeSettings, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write %s: %v", claudeSettings, err)
+	}
+
+	paths := configPathsForBackup(homeDir)
+	if paths == nil {
+		t.Error("configPathsForBackup returned nil, want non-nil")
 	}
 }
 
