@@ -299,7 +299,9 @@ func TestGoldenSDD_VSCode(t *testing.T) {
 func TestGoldenSDD_Codex(t *testing.T) {
 	home := t.TempDir()
 
-	result, err := sdd.Inject(home, codexAdapter(), "")
+	result, err := sdd.Inject(home, codexAdapter(), "", sdd.InjectOptions{
+		CodexModelAssignments: model.CodexModelPresetRecommended(),
+	})
 	if err != nil {
 		t.Fatalf("sdd.Inject(codex) error = %v", err)
 	}
@@ -328,6 +330,40 @@ func TestGoldenSDD_Codex(t *testing.T) {
 			t.Errorf("expected SDD skill file %q not found: %v", name, err)
 		}
 	}
+}
+
+func TestGoldenSDD_Codex_LowCost(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := sdd.Inject(home, codexAdapter(), "", sdd.InjectOptions{
+		CodexModelAssignments: model.CodexModelPresetLowCost(),
+	})
+	if err != nil {
+		t.Fatalf("sdd.Inject(codex, LowCost) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("sdd.Inject(codex, LowCost) changed = false")
+	}
+
+	agentsMD := readTestFile(t, filepath.Join(home, ".codex", "AGENTS.md"))
+	assertGolden(t, "sdd-codex-agentsmd-lowcost.golden", agentsMD)
+}
+
+func TestGoldenSDD_Codex_Powerful(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := sdd.Inject(home, codexAdapter(), "", sdd.InjectOptions{
+		CodexModelAssignments: model.CodexModelPresetPowerful(),
+	})
+	if err != nil {
+		t.Fatalf("sdd.Inject(codex, Powerful) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("sdd.Inject(codex, Powerful) changed = false")
+	}
+
+	agentsMD := readTestFile(t, filepath.Join(home, ".codex", "AGENTS.md"))
+	assertGolden(t, "sdd-codex-agentsmd-powerful.golden", agentsMD)
 }
 
 func TestGoldenSDD_Windsurf(t *testing.T) {

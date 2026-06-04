@@ -844,3 +844,84 @@ func setupMockHome(t *testing.T, home string) {
 	os.Setenv("HOME", home)
 	os.Setenv("USERPROFILE", home)
 }
+
+// TestApplyOverrides_CodexModelAssignments verifies that a non-nil
+// CodexModelAssignments override sets the selection.
+func TestApplyOverrides_CodexModelAssignments(t *testing.T) {
+	sel := model.Selection{}
+	assignments := model.CodexModelPresetPowerful()
+	overrides := &model.SyncOverrides{
+		CodexModelAssignments: assignments,
+	}
+	applyOverrides(&sel, overrides)
+	if len(sel.CodexModelAssignments) != len(assignments) {
+		t.Fatalf("CodexModelAssignments len = %d, want %d", len(sel.CodexModelAssignments), len(assignments))
+	}
+	if sel.CodexModelAssignments["sdd-apply"] != model.CodexEffortHigh {
+		t.Errorf("CodexModelAssignments[sdd-apply] = %q, want high", sel.CodexModelAssignments["sdd-apply"])
+	}
+}
+
+// TestLoadPersistedAssignments_Codex verifies that state with codexModelAssignments
+// populates selection.CodexModelAssignments.
+func TestLoadPersistedAssignments_Codex(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{
+		InstalledAgents: []string{"codex"},
+		CodexModelAssignments: map[string]string{
+			"sdd-apply":   "medium",
+			"sdd-explore": "low",
+			"default":     "medium",
+		},
+	}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	sel := model.Selection{}
+	loadPersistedAssignments(home, &sel)
+
+	if sel.CodexModelAssignments["sdd-apply"] != model.CodexEffortMedium {
+		t.Errorf("CodexModelAssignments[sdd-apply] = %q, want medium", sel.CodexModelAssignments["sdd-apply"])
+	}
+}
+
+// TestLoadPersistedAssignments_CodexMissingKey verifies that a state without
+// codexModelAssignments leaves selection.CodexModelAssignments nil.
+func TestLoadPersistedAssignments_CodexMissingKey(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{
+		InstalledAgents: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	sel := model.Selection{}
+	loadPersistedAssignments(home, &sel)
+
+	if sel.CodexModelAssignments != nil {
+		t.Errorf("CodexModelAssignments = %v, want nil when key absent", sel.CodexModelAssignments)
+	}
+}
+
+// TestPersistAssignments_Codex verifies that non-empty CodexModelAssignments
+// are persisted to state.json.
+func TestPersistAssignments_Codex(t *testing.T) {
+	home := t.TempDir()
+	// Write initial state so state.Read succeeds.
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"codex"}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	sel := model.Selection{
+		CodexModelAssignments: model.CodexModelPresetLowCost(),
+	}
+	persistAssignments(home, sel)
+
+	s, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	if s.CodexModelAssignments["sdd-apply"] != "medium" {
+		t.Errorf("state.CodexModelAssignments[sdd-apply] = %q, want medium", s.CodexModelAssignments["sdd-apply"])
+	}
+}

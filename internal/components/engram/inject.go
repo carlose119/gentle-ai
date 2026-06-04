@@ -401,16 +401,12 @@ func injectWithOptions(configHomeDir, promptDir string, adapter agents.Adapter, 
 		}
 
 		// Step 1 — multi-agent SDD enablement keys ([features] and [agents]).
-		// features.multi_agent defaults to false (experimental, opt-in only).
-		// Set Selection.CodexMultiAgent=true / InjectOptions{CodexMultiAgent:true}
-		// to write multi_agent=true. agents.max_threads and agents.max_depth are
-		// always written with conservative defaults so they are ready when the
-		// user enables multi_agent.
-		multiAgentValue := "false"
-		if opts.CodexMultiAgent {
-			multiAgentValue = "true"
-		}
-		withFeatures := filemerge.UpsertTOMLTableKey(existing, "features", "multi_agent", multiAgentValue)
+		// features.multi_agent is enabled by default: Codex SDD delegates phases via
+		// spawn_agent so the per-phase reasoning_effort table actually applies. The
+		// orchestrator asset gracefully falls back to solo execution if the multi-agent
+		// tools are unavailable in the session. agents.max_threads/max_depth carry
+		// conservative defaults.
+		withFeatures := filemerge.UpsertTOMLTableKey(existing, "features", "multi_agent", "true")
 		withMaxThreads := filemerge.UpsertTOMLTableKey(withFeatures, "agents", "max_threads", "4")
 		withMaxDepth := filemerge.UpsertTOMLTableKey(withMaxThreads, "agents", "max_depth", "2")
 

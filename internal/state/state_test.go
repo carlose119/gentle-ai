@@ -367,3 +367,89 @@ func TestBackwardCompatNoAssignments(t *testing.T) {
 		t.Errorf("ModelAssignments = %v, want nil", s.ModelAssignments)
 	}
 }
+
+// TestInstallStateCodexRoundTrip verifies that CodexModelAssignments persists
+// with the "codexModelAssignments" JSON key and is omitted when empty.
+func TestInstallStateCodexRoundTrip(t *testing.T) {
+	home := t.TempDir()
+
+	assignments := map[string]string{
+		"sdd-apply":   "high",
+		"sdd-explore": "low",
+		"default":     "medium",
+	}
+
+	s := InstallState{
+		InstalledAgents:      []string{"codex"},
+		CodexModelAssignments: assignments,
+	}
+
+	if err := Write(home, s); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	got, err := Read(home)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(got.CodexModelAssignments, assignments) {
+		t.Errorf("CodexModelAssignments = %v, want %v", got.CodexModelAssignments, assignments)
+	}
+}
+
+// TestInstallStateCodexOmitEmpty verifies that CodexModelAssignments is omitted
+// from the JSON when empty.
+func TestInstallStateCodexOmitEmpty(t *testing.T) {
+	home := t.TempDir()
+
+	s := InstallState{InstalledAgents: []string{"codex"}}
+	if err := Write(home, s); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	data, err := os.ReadFile(Path(home))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	if contains(string(data), "codexModelAssignments") {
+		t.Error("JSON must not contain codexModelAssignments when empty")
+	}
+}
+
+// TestInstallStateCodexMissingKeyReadback verifies that a state file without
+// codexModelAssignments reads back as nil (forward-compat / absent key).
+func TestInstallStateCodexMissingKeyReadback(t *testing.T) {
+	home := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(home, stateDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	legacy := []byte(`{"installed_agents":["codex"]}` + "\n")
+	if err := os.WriteFile(Path(home), legacy, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	s, err := Read(home)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if s.CodexModelAssignments != nil {
+		t.Errorf("CodexModelAssignments = %v, want nil (forward-compat)", s.CodexModelAssignments)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && findSub(s, substr)
+}
+
+func findSub(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

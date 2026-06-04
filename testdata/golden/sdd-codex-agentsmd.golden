@@ -16,9 +16,9 @@ Bind this to the dedicated `sdd-orchestrator` agent or rule only. Do NOT apply i
 Check `~/.codex/config.toml` for `features.multi_agent`:
 
 - If `features.multi_agent = true` **AND** the tools `spawn_agent`, `wait_agent`, and `close_agent` are available in this session → use the **Delegated path** below.
-- Otherwise (default) → use the **Solo path** below.
+- Otherwise → use the **Solo path** below.
 
-`features.multi_agent` defaults to `false` (written by gentle-ai during installation). To opt in, set `multi_agent = true` in the `[features]` section of `~/.codex/config.toml` and restart your session.
+`features.multi_agent` is enabled by default (gentle-ai writes `multi_agent = true` during installation) so SDD delegates phases and the per-phase reasoning_effort table applies. To force solo execution, set `multi_agent = false` in the `[features]` section of `~/.codex/config.toml` and restart your session.
 
 ---
 
@@ -48,7 +48,7 @@ Strict TDD: when the project has `strict_tdd: true` in `sdd-init` context, alway
 
 ---
 
-## Delegated Path (opt-in, requires features.multi_agent = true)
+## Delegated Path (default, requires features.multi_agent = true)
 
 When multi-agent tools are available, delegate each SDD phase to a sub-agent using Codex's native tool set:
 
@@ -62,7 +62,7 @@ When multi-agent tools are available, delegate each SDD phase to a sub-agent usi
 ### Phase delegation pattern
 
 For each phase:
-1. Determine the phase tier and its `reasoning_effort` value (see Model Profiles below): `xhigh` for propose/design/verify/judge, `high` for spec/tasks/apply, `low` for explore/archive/onboard.
+1. Look up the phase's `reasoning_effort` value in the **Model Profiles** table below (the values are preset-driven and written by gentle-ai — do not assume fixed tiers).
 2. `spawn_agent` with `task_name`, the phase prompt as `message`, and `reasoning_effort` set to the tier value. The `spawn_agent` tool has NO `profile` parameter — tier selection is the `reasoning_effort` argument, not a profile name.
 3. Set `fork_turns: "none"` whenever you override `reasoning_effort` or `model`. A full-history fork (the default) REJECTS these overrides, so the override is silently ignored unless `fork_turns` is `"none"`.
 4. `wait_agent` to collect the result.
@@ -183,7 +183,8 @@ These profile files apply to whole CLI sessions: `codex --profile <name> "<promp
 
 | Profile (CLI) | `reasoning_effort` (spawn_agent) | SDD phases |
 |---------------|----------------------------------|------------|
-| `sdd-strong` | `xhigh` | propose, design, verify, judge |
+| `sdd-strong` | `high` | propose, design, verify, judge |
 | `sdd-mid` | `high` | spec, tasks, apply |
 | `sdd-cheap` | `low` | explore, archive, onboard |
+
 <!-- /gentle-ai:sdd-orchestrator -->

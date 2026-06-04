@@ -614,6 +614,7 @@ func (s componentSyncStep) Run() error {
 				OpenCodeModelAssignments:           s.selection.ModelAssignments,
 				ClaudeModelAssignments:             s.selection.ClaudeModelAssignments,
 				KiroModelAssignments:               s.selection.KiroModelAssignments,
+				CodexModelAssignments:              s.selection.CodexModelAssignments,
 				WorkspaceDir:                       s.workspaceDir,
 				StrictTDD:                          s.selection.StrictTDD,
 				PreserveOpenCodeOrchestratorPrompt: profileStrategy == model.SDDProfileStrategyExternalSingleActive,

@@ -1021,9 +1021,10 @@ func TestInjectCodexProfilesIdempotent(t *testing.T) {
 
 // ─── Codex multi-agent config injection tests ────────────────────────────────
 
-// TestInjectCodexMultiAgentDefaultOff asserts that after a plain Inject call
-// (no explicit opt-in), config.toml contains [features] with multi_agent = false.
-func TestInjectCodexMultiAgentDefaultOff(t *testing.T) {
+// TestInjectCodexMultiAgentDefaultOn asserts that after a plain Inject call,
+// config.toml contains [features] with multi_agent = true. Codex SDD enables
+// multi-agent delegation by default so the per-phase reasoning_effort table applies.
+func TestInjectCodexMultiAgentDefaultOn(t *testing.T) {
 	home := t.TempDir()
 
 	if _, err := Inject(home, codexAdapter()); err != nil {
@@ -1039,11 +1040,11 @@ func TestInjectCodexMultiAgentDefaultOff(t *testing.T) {
 	if !strings.Contains(text, "[features]") {
 		t.Fatalf("config.toml missing [features] section; got:\n%s", text)
 	}
-	if !strings.Contains(text, "multi_agent = false") {
-		t.Fatalf("config.toml missing multi_agent = false; got:\n%s", text)
+	if !strings.Contains(text, "multi_agent = true") {
+		t.Fatalf("config.toml missing multi_agent = true (enabled by default); got:\n%s", text)
 	}
-	if strings.Contains(text, "multi_agent = true") {
-		t.Fatalf("config.toml must NOT have multi_agent = true by default; got:\n%s", text)
+	if strings.Contains(text, "multi_agent = false") {
+		t.Fatalf("config.toml must NOT have multi_agent = false by default; got:\n%s", text)
 	}
 }
 

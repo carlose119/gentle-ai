@@ -159,6 +159,13 @@ func (a *Adapter) SupportsMCP() bool {
 	return true
 }
 
+// RenderCodexPhaseEfforts implements codexModelResolver. It delegates to
+// model.RenderCodexPhaseEfforts so that inject.go can substitute the
+// {{CODEX_PHASE_EFFORTS}} placeholder in the Codex orchestrator asset.
+func (a *Adapter) RenderCodexPhaseEfforts(assignments map[string]model.CodexEffort) string {
+	return model.RenderCodexPhaseEfforts(assignments)
+}
+
 func defaultStat(path string) statResult {
 	info, err := os.Stat(path)
 	if err != nil {

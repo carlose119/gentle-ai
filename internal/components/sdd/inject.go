@@ -26,6 +26,7 @@ type InjectOptions struct {
 	OpenCodeModelAssignments map[string]model.ModelAssignment
 	ClaudeModelAssignments   map[string]model.ClaudeModelAlias
 	KiroModelAssignments     map[string]model.KiroModelAlias
+	CodexModelAssignments    map[string]model.CodexEffort
 
 	// WorkspaceDir is the root of the current workspace (e.g. os.Getwd()).
 	// When non-empty and the adapter implements workflowInjector, native
@@ -88,6 +89,17 @@ type kiroModelResolver interface {
 // shape consistent with kiroModelResolver.
 type claudeModelResolver interface {
 	ClaudeModelID(alias model.ClaudeModelAlias) string
+}
+
+// codexModelResolver is an optional adapter capability. When implemented,
+// injectFileAppend will replace the {{CODEX_PHASE_EFFORTS}} placeholder in the
+// Codex SDD orchestrator asset with a rendered per-phase effort table derived
+// from the CodexModelAssignments in InjectOptions.
+//
+// Adapters that do NOT implement this interface are completely unaffected —
+// the substitution only fires when the adapter satisfies this interface.
+type codexModelResolver interface {
+	RenderCodexPhaseEfforts(assignments map[string]model.CodexEffort) string
 }
 
 // monorepoRootMarkers identify files/dirs that ONLY exist at the true root
@@ -237,7 +249,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			// custom persona, the SDD content must still be injected. We append the
 			// SDD orchestrator section to the existing system prompt file so it is
 			// always present regardless of persona choice.
-			result, err := injectFileAppend(homeDir, adapter)
+			result, err := injectFileAppend(homeDir, adapter, opts)
 			if err != nil {
 				return InjectionResult{}, err
 			}
@@ -1507,7 +1519,7 @@ func sddOrchestratorAsset(agent model.AgentID) string {
 	}
 }
 
-func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
+func injectFileAppend(homeDir string, adapter agents.Adapter, opts InjectOptions) (InjectionResult, error) {
 	promptPath := adapter.SystemPromptFile(homeDir)
 
 	existing, err := readFileOrEmpty(promptPath)
@@ -1525,6 +1537,18 @@ func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, 
 
 	// Use agent-specific SDD orchestrator content when available; fall back to generic.
 	content := assets.MustRead(sddOrchestratorAsset(adapter.Agent()))
+
+	// Codex-only: substitute {{CODEX_PHASE_EFFORTS}} with a rendered per-phase
+	// effort table. Only fires when the adapter implements codexModelResolver.
+	// All other FileReplace adapters (Gemini, Cursor, etc.) are unaffected.
+	if cmr, ok := adapter.(codexModelResolver); ok {
+		rendered := cmr.RenderCodexPhaseEfforts(opts.CodexModelAssignments)
+		content = strings.ReplaceAll(content, "{{CODEX_PHASE_EFFORTS}}", rendered)
+		// Post-check: fail loudly if any placeholder token remains unresolved.
+		if strings.Contains(content, "{{") {
+			return InjectionResult{}, fmt.Errorf("inject(codex): unresolved placeholder token '{{' remains in AGENTS.md content after substitution")
+		}
+	}
 
 	// If there is a bare (un-marked) legacy orchestrator block, strip it first
 	// so InjectMarkdownSection can re-inject the current canonical content.

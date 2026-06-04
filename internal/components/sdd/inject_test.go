@@ -5119,3 +5119,138 @@ func TestEnsureClaudeSkillRegistryHookRejectsUnexpectedHookSchema(t *testing.T) 
 		t.Fatalf("settings were modified: %q", after)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Codex inject tests (T3.1)
+// ---------------------------------------------------------------------------
+
+func codexInjectAdapter() agents.Adapter {
+	// Import inline to avoid adding to the import block of existing file
+	// We use agents.NewAdapter to get the codex adapter.
+	a, err := agents.NewAdapter("codex")
+	if err != nil {
+		panic("agents.NewAdapter(codex): " + err.Error())
+	}
+	return a
+}
+
+func TestInject_CodexSubstitutesPhaseEfforts(t *testing.T) {
+	home := t.TempDir()
+	adapter := codexInjectAdapter()
+
+	opts := InjectOptions{
+		CodexModelAssignments: model.CodexModelPresetRecommended(),
+	}
+	result, err := Inject(home, adapter, "", opts)
+	if err != nil {
+		t.Fatalf("Inject(codex, Recommended) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(codex, Recommended) changed = false, want true")
+	}
+
+	agentsMD, readErr := os.ReadFile(filepath.Join(home, ".codex", "AGENTS.md"))
+	if readErr != nil {
+		t.Fatalf("ReadFile(AGENTS.md) error = %v", readErr)
+	}
+	text := string(agentsMD)
+	if strings.Contains(text, "{{") {
+		t.Errorf("AGENTS.md contains unresolved placeholder '{{' after Inject:\n%s", text)
+	}
+	// Table should be present.
+	if !strings.Contains(text, "sdd-strong") {
+		t.Error("AGENTS.md missing sdd-strong tier row in rendered table")
+	}
+	if !strings.Contains(text, "sdd-mid") {
+		t.Error("AGENTS.md missing sdd-mid tier row")
+	}
+	if !strings.Contains(text, "sdd-cheap") {
+		t.Error("AGENTS.md missing sdd-cheap tier row")
+	}
+}
+
+func TestInject_CodexNoAssignmentsUsesRecommended(t *testing.T) {
+	home := t.TempDir()
+	adapter := codexInjectAdapter()
+
+	// No CodexModelAssignments → should use Recommended preset as fallback.
+	result, err := Inject(home, adapter, "")
+	if err != nil {
+		t.Fatalf("Inject(codex, nil opts) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(codex, nil opts) changed = false")
+	}
+
+	agentsMD, readErr := os.ReadFile(filepath.Join(home, ".codex", "AGENTS.md"))
+	if readErr != nil {
+		t.Fatalf("ReadFile(AGENTS.md) error = %v", readErr)
+	}
+	text := string(agentsMD)
+	if strings.Contains(text, "{{") {
+		t.Errorf("AGENTS.md contains unresolved '{{' with nil assignments:\n%s", text)
+	}
+}
+
+func TestInject_CodexIdempotent(t *testing.T) {
+	home := t.TempDir()
+	adapter := codexInjectAdapter()
+	opts := InjectOptions{
+		CodexModelAssignments: model.CodexModelPresetRecommended(),
+	}
+
+	_, err := Inject(home, adapter, "", opts)
+	if err != nil {
+		t.Fatalf("first Inject(codex) error = %v", err)
+	}
+	second, err := Inject(home, adapter, "", opts)
+	if err != nil {
+		t.Fatalf("second Inject(codex) error = %v", err)
+	}
+	if second.Changed {
+		t.Error("second Inject(codex) Changed = true, want false (idempotent)")
+	}
+}
+
+func TestInject_NonCodexAdapterUnaffected(t *testing.T) {
+	// Kiro, Cursor, and Gemini adapters must not be affected by CodexModelAssignments.
+	adapters := []struct {
+		name    string
+		adapter agents.Adapter
+	}{
+		{"cursor", func() agents.Adapter {
+			a, _ := agents.NewAdapter("cursor")
+			return a
+		}()},
+		{"gemini", func() agents.Adapter {
+			a, _ := agents.NewAdapter("gemini-cli")
+			return a
+		}()},
+	}
+
+	for _, tc := range adapters {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			opts := InjectOptions{
+				CodexModelAssignments: model.CodexModelPresetRecommended(),
+			}
+			result, err := Inject(home, tc.adapter, "", opts)
+			if err != nil {
+				t.Fatalf("Inject(%s) error = %v", tc.name, err)
+			}
+			if !result.Changed {
+				t.Fatalf("Inject(%s) changed = false", tc.name)
+			}
+			// Non-codex adapters must produce no unresolved placeholders.
+			for _, f := range result.Files {
+				data, readErr := os.ReadFile(f)
+				if readErr != nil {
+					continue
+				}
+				if strings.Contains(string(data), "{{CODEX_PHASE_EFFORTS}}") {
+					t.Errorf("%s adapter file %q contains unresolved {{CODEX_PHASE_EFFORTS}}", tc.name, f)
+				}
+			}
+		})
+	}
+}
