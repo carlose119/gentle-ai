@@ -35,6 +35,11 @@ type InstallState struct {
 	// written before Kiro had its own picker options.
 	KiroModelAssignments map[string]string `json:"kiro_model_assignments,omitempty"`
 
+	// CodexModelAssignments maps SDD phase names to a Codex reasoning_effort value
+	// (low|medium|high|xhigh). Persisted so that `gentle-ai sync` preserves the
+	// user's per-phase effort preset instead of falling back to Recommended.
+	CodexModelAssignments map[string]string `json:"codexModelAssignments,omitempty"`
+
 	// ModelAssignments maps sub-agent names to provider/model pairs (OpenCode).
 	ModelAssignments map[string]ModelAssignmentState `json:"model_assignments,omitempty"`
 
@@ -97,6 +102,7 @@ func MergeAgents(existing InstallState, newAgents []string) InstallState {
 		ModelAssignments:       existing.ModelAssignments,
 		ClaudeModelAssignments: existing.ClaudeModelAssignments,
 		KiroModelAssignments:   existing.KiroModelAssignments,
+		CodexModelAssignments:  existing.CodexModelAssignments,
 		Persona:                existing.Persona,
 	}
 }
