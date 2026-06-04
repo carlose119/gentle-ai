@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
+	codexagent "github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/kimi"
 	"github.com/gentleman-programming/gentle-ai/internal/assets"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
@@ -933,6 +934,10 @@ func componentPathsWithWorkspaceScoped(homeDir, workspaceDir string, scope Insta
 			case model.StrategyTOMLFile:
 				if p := adapter.MCPConfigPath(targetDir, "engram"); p != "" {
 					paths = append(paths, p)
+					// Track the gentle-ai SDD profile files written alongside
+					// the Codex config.toml so they are removed on uninstall.
+					codexHomeDir := filepath.Dir(p)
+					paths = append(paths, codexagent.SddProfilePaths(codexHomeDir)...)
 				}
 			}
 			if adapter.SystemPromptStrategy() == model.StrategyMarkdownSections {

@@ -138,6 +138,13 @@ Kiro uses native custom agents in `~/.kiro/agents/`. `gentle-ai` writes phase ag
 - System prompt at `~/.codex/AGENTS.md`
 - Engram instruction files at `~/.codex/engram-instructions.md`
 - MCP servers (Engram and Context7) are upserted as `[mcp_servers.<name>]` blocks in `~/.codex/config.toml`
+- SDD model-selection profiles written as separate files at `~/.codex/<name>.config.toml` (Codex >= 0.134.0 separate-file mechanism). Selected at runtime via `codex --profile <name>`:
+
+  | Profile | `model_reasoning_effort` | SDD phases |
+  |---------|--------------------------|------------|
+  | `sdd-strong` | `xhigh` | propose, design, verify, judge |
+  | `sdd-mid` | `high` | spec, tasks, apply |
+  | `sdd-cheap` | `low` | explore, archive, onboard |
 
 ### Windsurf
 

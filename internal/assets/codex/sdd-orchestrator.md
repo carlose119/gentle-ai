@@ -294,3 +294,17 @@ Convention files under `~/.codex/skills/_shared/` (global) or `.agent/skills/_sh
 - `engram` → `mem_search(...)` → `mem_get_observation(...)`
 - `openspec` → read `openspec/changes/*/state.yaml`
 - `none` → state not persisted — explain to user
+
+## Model Profiles
+
+gentle-ai writes three SDD model-selection profile files into `~/.codex/` during installation. Each profile sets `model_reasoning_effort` so Codex picks the right model tier at runtime — no hardcoded model IDs.
+
+Select a profile when running a phase: `codex --profile <name>`
+
+| Profile | `model_reasoning_effort` | SDD phases |
+|---------|--------------------------|------------|
+| `sdd-strong` | `xhigh` | propose, design, verify, judge |
+| `sdd-mid` | `high` | spec, tasks, apply |
+| `sdd-cheap` | `low` | explore, archive, onboard |
+
+When spawning a phase agent (once multi-agent delegation is enabled via `features.multi_agent = true`), pass the matching profile name so the sub-agent runs at the appropriate cost/quality tier. Example: for a `sdd-design` phase, use `--profile sdd-strong`.

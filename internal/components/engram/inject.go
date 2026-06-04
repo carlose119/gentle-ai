@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/assets"
 	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
@@ -372,6 +373,18 @@ func inject(configHomeDir, promptDir string, adapter agents.Adapter) (InjectionR
 		}
 		changed = changed || tomlWrite.Changed
 		files = append(files, configPath)
+
+		// Write gentle-ai SDD model-selection profile files into ~/.codex/.
+		// These use the separate-file mechanism from Codex >= 0.134.0 and are
+		// selected at runtime via `codex --profile <name>`.
+		// codexHomeDir is the ~/.codex directory (the parent of config.toml).
+		codexHomeDir := filepath.Dir(configPath)
+		profilesChanged, profileFiles, profileErr := codex.WriteCodexProfiles(codexHomeDir)
+		if profileErr != nil {
+			return InjectionResult{}, profileErr
+		}
+		changed = changed || profilesChanged
+		files = append(files, profileFiles...)
 	}
 
 	// 2. Inject Engram memory protocol into system prompt (if supported).
