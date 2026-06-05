@@ -138,9 +138,23 @@ func selfUpdate(ctx context.Context, version string, profile system.PlatformProf
 		return nil
 	}
 
+	return restartAfterGentleAIUpgrade(target.LatestVersion, stdout)
+}
+
+func gentleAIUpgradeSucceeded(report upgrade.UpgradeReport) (string, bool) {
+	for _, r := range report.Results {
+		if r.ToolName == "gentle-ai" && r.Status == upgrade.UpgradeSucceeded {
+			return strings.TrimPrefix(r.NewVersion, "v"), true
+		}
+	}
+	return "", false
+}
+
+func restartAfterGentleAIUpgrade(latestVersion string, stdout io.Writer) error {
+	latestVersion = strings.TrimPrefix(latestVersion, "v")
 	// Re-exec on Unix; print message on Windows.
 	if goOS() == "windows" {
-		_, _ = fmt.Fprintf(stdout, "Updated to v%s — please restart.\n", target.LatestVersion)
+		_, _ = fmt.Fprintf(stdout, "Updated to v%s — please restart.\n", latestVersion)
 		return nil
 	}
 
@@ -164,7 +178,7 @@ func selfUpdate(ctx context.Context, version string, profile system.PlatformProf
 	// Set loop guard env var before re-exec.
 	os.Setenv(envSelfUpdateDone, "1")
 
-	_, _ = fmt.Fprintf(stdout, "Updated to v%s, restarting...\n", target.LatestVersion)
+	_, _ = fmt.Fprintf(stdout, "Updated to v%s, restarting...\n", latestVersion)
 
 	return reExec(executable, os.Args, os.Environ())
 }

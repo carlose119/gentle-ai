@@ -1093,6 +1093,21 @@ func TestUpgradePhaseCompletedClearsUpdateResults(t *testing.T) {
 	}
 }
 
+func TestReportUpgradedGentleAI(t *testing.T) {
+	report := upgrade.UpgradeReport{Results: []upgrade.ToolUpgradeResult{
+		{ToolName: "engram", Status: upgrade.UpgradeSucceeded},
+		{ToolName: "gentle-ai", Status: upgrade.UpgradeSucceeded},
+	}}
+	if !reportUpgradedGentleAI(report) {
+		t.Fatal("reportUpgradedGentleAI() = false, want true")
+	}
+
+	report.Results[1].Status = upgrade.UpgradeFailed
+	if reportUpgradedGentleAI(report) {
+		t.Fatal("reportUpgradedGentleAI() = true for failed gentle-ai upgrade")
+	}
+}
+
 // ─── T16: Welcome screen 7-item menu navigation ────────────────────────────
 
 // TestWelcomeMenu_InstallNavigation verifies cursor 0 (Install) goes to ScreenDetection.

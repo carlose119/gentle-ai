@@ -303,9 +303,9 @@ type Model struct {
 	Execution         pipeline.ExecutionResult
 	Backups           []backup.Manifest
 	ModelPicker       screens.ModelPickerState
-	ClaudeModelPicker  screens.ClaudeModelPickerState
-	KiroModelPicker    screens.KiroModelPickerState
-	CodexModelPicker   screens.CodexModelPickerState
+	ClaudeModelPicker screens.ClaudeModelPickerState
+	KiroModelPicker   screens.KiroModelPickerState
+	CodexModelPicker  screens.CodexModelPickerState
 	SkillPicker       []model.SkillID
 	Err               error
 
@@ -2411,9 +2411,10 @@ func (m Model) detectProjectEngramData() bool {
 }
 
 // startUpgradeSync runs upgrade then sync sequentially via tea.Sequence.
-// Design decision: sync runs unconditionally regardless of upgrade outcome.
+// Design decision: sync normally runs regardless of tool-level upgrade outcome.
 // Tool-level upgrade failures are per-tool (in UpgradeReport.Results), not fatal.
-// The user sees both results and can re-run if needed.
+// Exception: if gentle-ai itself was upgraded, sync is skipped so the old
+// running binary cannot rewrite configs after installing a newer binary.
 //
 // The first command runs the upgrade and sends UpgradePhaseCompletedMsg
 // (so the UI can show State 2: sync running). The second command runs sync
@@ -2422,6 +2423,7 @@ func (m Model) startUpgradeSync() tea.Cmd {
 	upgradeFn := m.UpgradeFn
 	syncFn := m.SyncFn
 	updateResults := m.UpdateResults
+	gentleAIUpdated := false
 
 	upgradeCmd := func() tea.Msg {
 		if upgradeFn == nil {
@@ -2429,10 +2431,14 @@ func (m Model) startUpgradeSync() tea.Cmd {
 		}
 		ctx := context.Background()
 		report := upgradeFn(ctx, updateResults)
+		gentleAIUpdated = reportUpgradedGentleAI(report)
 		return UpgradePhaseCompletedMsg{Report: report}
 	}
 
 	syncCmd := func() tea.Msg {
+		if gentleAIUpdated {
+			return SyncDoneMsg{}
+		}
 		if syncFn == nil {
 			return SyncDoneMsg{Err: fmt.Errorf("sync function not configured")}
 		}
@@ -2444,6 +2450,15 @@ func (m Model) startUpgradeSync() tea.Cmd {
 	}
 
 	return tea.Sequence(upgradeCmd, syncCmd)
+}
+
+func reportUpgradedGentleAI(report upgrade.UpgradeReport) bool {
+	for _, result := range report.Results {
+		if result.ToolName == "gentle-ai" && result.Status == upgrade.UpgradeSucceeded {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreBackup triggers a backup restore in a goroutine.

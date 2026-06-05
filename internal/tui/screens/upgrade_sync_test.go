@@ -48,7 +48,7 @@ func TestRenderUpgradeSync_RunningUpgradePhase(t *testing.T) {
 func TestRenderUpgradeSync_RunningSyncPhase(t *testing.T) {
 	report := &upgrade.UpgradeReport{
 		Results: []upgrade.ToolUpgradeResult{
-			{ToolName: "gentle-ai", OldVersion: "v1.0.0", NewVersion: "v2.0.0", Status: upgrade.UpgradeSucceeded},
+			{ToolName: "engram", OldVersion: "v1.0.0", NewVersion: "v2.0.0", Status: upgrade.UpgradeSucceeded},
 		},
 	}
 
@@ -71,7 +71,7 @@ func TestRenderUpgradeSync_RunningSyncPhase(t *testing.T) {
 func TestRenderUpgradeSync_CombinedResult(t *testing.T) {
 	report := &upgrade.UpgradeReport{
 		Results: []upgrade.ToolUpgradeResult{
-			{ToolName: "gentle-ai", OldVersion: "v1.0.0", NewVersion: "v2.0.0", Status: upgrade.UpgradeSucceeded},
+			{ToolName: "engram", OldVersion: "v1.0.0", NewVersion: "v2.0.0", Status: upgrade.UpgradeSucceeded},
 		},
 	}
 	syncFiles := []string{"a", "b", "c"}
@@ -94,6 +94,35 @@ func TestRenderUpgradeSync_CombinedResult(t *testing.T) {
 		if !strings.Contains(out, f) {
 			t.Errorf("RenderUpgradeSync should render sync file path %q in output; got:\n%s", f, out)
 		}
+	}
+}
+
+func TestRenderUpgradeSync_SkipsSyncWhenGentleAIUpgraded(t *testing.T) {
+	report := &upgrade.UpgradeReport{Results: []upgrade.ToolUpgradeResult{
+		{ToolName: "gentle-ai", OldVersion: "v1.36.1", NewVersion: "v1.36.2", Status: upgrade.UpgradeSucceeded},
+	}}
+
+	out := RenderUpgradeSync(nil, report, nil, nil, nil, false, true, 0, 0)
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "sync skipped") {
+		t.Fatalf("RenderUpgradeSync() should say sync was skipped after gentle-ai upgrade:\n%s", out)
+	}
+	if !strings.Contains(lower, "restart gentle-ai") {
+		t.Fatalf("RenderUpgradeSync() should ask for restart after gentle-ai upgrade:\n%s", out)
+	}
+	if strings.Contains(lower, "no files needed updating") {
+		t.Fatalf("RenderUpgradeSync() should not pretend sync ran after gentle-ai upgrade:\n%s", out)
+	}
+}
+
+func TestRenderUpgrade_ShowsRestartNoticeWhenGentleAIUpgraded(t *testing.T) {
+	report := &upgrade.UpgradeReport{Results: []upgrade.ToolUpgradeResult{
+		{ToolName: "gentle-ai", OldVersion: "v1.36.1", NewVersion: "v1.36.2", Status: upgrade.UpgradeSucceeded},
+	}}
+
+	out := RenderUpgrade(nil, report, nil, false, true, 0, 0)
+	if !strings.Contains(strings.ToLower(out), "restart gentle-ai") {
+		t.Fatalf("RenderUpgrade() should show restart notice after gentle-ai upgrade:\n%s", out)
 	}
 }
 
@@ -194,7 +223,7 @@ func TestRenderUpgradeSync_CheckingState(t *testing.T) {
 func TestRenderUpgradeSync_TruncatesLargeFileList(t *testing.T) {
 	report := &upgrade.UpgradeReport{
 		Results: []upgrade.ToolUpgradeResult{
-			{ToolName: "gentle-ai", OldVersion: "v1.0.0", NewVersion: "v2.0.0", Status: upgrade.UpgradeSucceeded},
+			{ToolName: "engram", OldVersion: "v1.0.0", NewVersion: "v2.0.0", Status: upgrade.UpgradeSucceeded},
 		},
 	}
 	files := make([]string, maxFilesToShow+3)

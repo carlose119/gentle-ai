@@ -29,13 +29,14 @@ import (
 var Version = "dev"
 
 var (
-	updateCheckAll           = update.CheckAll
-	updateCheckFiltered      = update.CheckFiltered
-	upgradeExecute           = upgrade.Execute
-	selfUpdateFn             = selfUpdate
-	ensureCurrentOSSupported = system.EnsureCurrentOSSupported
-	detectSystem             = system.Detect
-	runTUI                   = func(m tea.Model, opts ...tea.ProgramOption) (tea.Model, error) {
+	updateCheckAll            = update.CheckAll
+	updateCheckFiltered       = update.CheckFiltered
+	upgradeExecute            = upgrade.Execute
+	upgradeExecuteWithOptions = upgrade.ExecuteWithOptions
+	selfUpdateFn              = selfUpdate
+	ensureCurrentOSSupported  = system.EnsureCurrentOSSupported
+	detectSystem              = system.Detect
+	runTUI                    = func(m tea.Model, opts ...tea.ProgramOption) (tea.Model, error) {
 		p := tea.NewProgram(m, opts...)
 		return p.Run()
 	}
@@ -294,11 +295,10 @@ func runUpgrade(ctx context.Context, args []string, detection system.DetectionRe
 		return checkErr
 	}
 
-	// Execute upgrades (no-op if nothing is UpdateAvailable).
-	// Use ExecuteWithOptions directly so CLI-only flags (e.g. --no-backup) can
-	// be wired through without expanding the upgradeExecute test seam used by
-	// the TUI dispatcher (see tuiUpgrade below).
-	report := upgrade.ExecuteWithOptions(ctx, checkResults, profile, homeDir, dryRun, upgrade.ExecuteOptions{
+	// Execute upgrades (no-op if nothing is UpdateAvailable). Use the options
+	// seam so CLI-only flags (e.g. --no-backup) remain testable without invoking
+	// real package-manager strategies.
+	report := upgradeExecuteWithOptions(ctx, checkResults, profile, homeDir, dryRun, upgrade.ExecuteOptions{
 		Progress:          stdout,
 		BackupDiagnostics: stdout,
 		SkipBackup:        noBackup,
@@ -314,7 +314,15 @@ func runUpgrade(ctx context.Context, args []string, detection system.DetectionRe
 		}
 	}
 
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if !dryRun {
+		if latestVersion, ok := gentleAIUpgradeSucceeded(report); ok {
+			return restartAfterGentleAIUpgrade(latestVersion, stdout)
+		}
+	}
+	return nil
 }
 
 func updateCheckError(results []update.UpdateResult) error {

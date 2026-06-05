@@ -180,7 +180,11 @@ func renderUpgradeSyncResult(report *upgrade.UpgradeReport, syncFiles []string, 
 	b.WriteString(styles.HeadingStyle.Render("Sync Results"))
 	b.WriteString("\n\n")
 
-	if syncErr != nil {
+	if reportUpgradedGentleAI(report) {
+		b.WriteString("  " + styles.WarningStyle.Render("⚠ Sync skipped because gentle-ai was upgraded."))
+		b.WriteString("\n")
+		b.WriteString("  " + styles.SubtextStyle.Render("Restart gentle-ai, then run sync with the new binary."))
+	} else if syncErr != nil {
 		b.WriteString("  " + styles.ErrorStyle.Render("✗ Sync failed: "+syncErr.Error()))
 	} else if len(syncFiles) == 0 {
 		b.WriteString("  " + styles.SubtextStyle.Render("No files needed updating"))
