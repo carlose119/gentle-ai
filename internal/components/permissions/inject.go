@@ -174,6 +174,13 @@ func injectCodexPermissions(homeDir string, adapter agents.Adapter) (InjectionRe
 
 	workspaceRootsSection := `permissions.gentle-dev.filesystem.":workspace_roots"`
 	for _, pattern := range []string{
+		`"**/.git"`,
+		`"**/.git/**"`,
+	} {
+		merged = filemerge.UpsertTOMLTableKey(merged, workspaceRootsSection, pattern, `"write"`)
+	}
+
+	for _, pattern := range []string{
 		`"**/.env"`,
 		`"**/.env.local"`,
 		`"**/.env.*.local"`,

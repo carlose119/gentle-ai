@@ -320,6 +320,8 @@ func TestInjectCodexWritesGentleDevPermissionsProfile(t *testing.T) {
 		`[permissions.gentle-dev.workspace_roots]`,
 		fmt.Sprintf("%q = true", home),
 		`[permissions.gentle-dev.filesystem.":workspace_roots"]`,
+		`"**/.git" = "write"`,
+		`"**/.git/**" = "write"`,
 		`"**/.env" = "deny"`,
 		`"**/.env.local" = "deny"`,
 		`"**/.env.*.local" = "deny"`,
