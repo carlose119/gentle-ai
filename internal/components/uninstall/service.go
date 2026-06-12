@@ -607,10 +607,7 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 			ops = append(ops, removeDirIfEmpty(pluginDir))
 
 			modelVariantsCacheDir := filepath.Join(homeDir, ".gentle-ai", "cache")
-			for _, cachePath := range []string{
-				filepath.Join(modelVariantsCacheDir, "model-variants.json"),
-				filepath.Join(modelVariantsCacheDir, "model-variants.json.tmp"),
-			} {
+			for _, cachePath := range modelVariantsCachePaths(modelVariantsCacheDir) {
 				targets = append(targets, cachePath)
 				ops = append(ops, removeFile(cachePath))
 			}
@@ -953,6 +950,46 @@ func rewriteTOMLFile(path string, mutate func(content string) (string, bool)) op
 			return true, false, nil
 		},
 	}
+}
+
+func modelVariantsCachePaths(cacheDir string) []string {
+	paths := []string{
+		filepath.Join(cacheDir, "model-variants.json"),
+		filepath.Join(cacheDir, "model-variants.json.tmp"),
+	}
+	matches, err := filepath.Glob(filepath.Join(cacheDir, "model-variants.json.*.tmp"))
+	if err != nil {
+		return paths
+	}
+	for _, path := range matches {
+		if !isModelVariantsRandomTempName(filepath.Base(path)) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func isModelVariantsRandomTempName(name string) bool {
+	const prefix = "model-variants.json."
+	const suffix = ".tmp"
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	token := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+	if len(token) != 6 {
+		return false
+	}
+	for _, char := range token {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func removeFile(path string) operation {

@@ -329,8 +329,15 @@ func TestComponentOperationsSDD_OpenCodeRemovesManagedPluginSourcesAndModelVaria
 	}
 	modelVariantsCachePath := filepath.Join(cacheDir, "model-variants.json")
 	modelVariantsTempPath := filepath.Join(cacheDir, "model-variants.json.tmp")
+	modelVariantsRandomTempPath := filepath.Join(cacheDir, "model-variants.json.a1b2c3.tmp")
 	unrelatedCachePath := filepath.Join(cacheDir, "keep.txt")
-	for _, path := range []string{modelVariantsCachePath, modelVariantsTempPath, unrelatedCachePath} {
+	unrelatedTempPaths := []string{
+		filepath.Join(cacheDir, "model-variants.json.abc12.tmp"),
+		filepath.Join(cacheDir, "model-variants.json.abc1234.tmp"),
+		filepath.Join(cacheDir, "model-variants.json.ABC123.tmp"),
+		filepath.Join(cacheDir, "model-variants.json.notes.tmp"),
+	}
+	for _, path := range append([]string{modelVariantsCachePath, modelVariantsTempPath, modelVariantsRandomTempPath, unrelatedCachePath}, unrelatedTempPaths...) {
 		if err := os.WriteFile(path, []byte("cache"), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", path, err)
 		}
@@ -338,7 +345,7 @@ func TestComponentOperationsSDD_OpenCodeRemovesManagedPluginSourcesAndModelVaria
 
 	applySDDOpenCodeOperations(t, svc, adapter)
 
-	for _, path := range []string{backgroundAgentsPath, modelVariantsPluginPath, skillRegistryPluginPath, modelVariantsCachePath, modelVariantsTempPath} {
+	for _, path := range []string{backgroundAgentsPath, modelVariantsPluginPath, skillRegistryPluginPath, modelVariantsCachePath, modelVariantsTempPath, modelVariantsRandomTempPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("managed file %q should be removed; stat err = %v", path, err)
 		}
@@ -348,6 +355,11 @@ func TestComponentOperationsSDD_OpenCodeRemovesManagedPluginSourcesAndModelVaria
 	}
 	if _, err := os.Stat(unrelatedCachePath); err != nil {
 		t.Fatalf("unrelated cache file should be preserved, stat err = %v", err)
+	}
+	for _, path := range unrelatedTempPaths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unrelated model variants temp-like file should be preserved, stat err = %v", err)
+		}
 	}
 	if _, err := os.Stat(thirdPartyPluginPath); err != nil {
 		t.Fatalf("third-party plugin should be preserved, stat err = %v", err)
@@ -372,7 +384,7 @@ func TestComponentOperationsSDD_OpenCodePreservesEmptyModelVariantsCacheDirector
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(cacheDir) error = %v", err)
 	}
-	for _, name := range []string{"model-variants.json", "model-variants.json.tmp"} {
+	for _, name := range []string{"model-variants.json", "model-variants.json.tmp", "model-variants.json.d4e5f6.tmp"} {
 		path := filepath.Join(cacheDir, name)
 		if err := os.WriteFile(path, []byte("cache"), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", path, err)

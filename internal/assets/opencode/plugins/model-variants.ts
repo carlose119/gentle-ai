@@ -9,12 +9,30 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { writeFile, mkdir, rename } from "fs/promises"
+import { writeFile, mkdir, rename, rm } from "fs/promises"
+import { randomBytes } from "crypto"
 import { homedir } from "os"
 import path from "path"
 
+const MODEL_VARIANTS_CACHE_FILE = "model-variants.json"
+
+function isIgnorableFileRace(err: unknown) {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code?: string }).code === "ENOENT"
+}
+
+async function removeOwnTempFile(tmpPath: string) {
+  try {
+    await rm(tmpPath, { force: true })
+  } catch (err) {
+    if (!isIgnorableFileRace(err)) {
+      console.error("[model-variants] temp cleanup failed:", err)
+    }
+  }
+}
+
 export const ModelVariantsPlugin: Plugin = async (input) => {
   async function refreshVariantsCache() {
+    let tmpPath: string | undefined
     try {
       const result = await input.client.provider.list()
       const data = (result as any).data ?? result
@@ -34,16 +52,20 @@ export const ModelVariantsPlugin: Plugin = async (input) => {
       const cacheDir = path.join(homedir(), ".gentle-ai", "cache")
       await mkdir(cacheDir, { recursive: true })
 
-      // Atomic write: write to .tmp then rename. rename() is atomic on POSIX,
-      // so concurrent readers (e.g. `gentle-ai sync`) never see a partial JSON.
-      // Always write — even when empty — to avoid leaving a stale cache from
-      // a previous run alive after providers stop reporting variants.
-      const finalPath = path.join(cacheDir, "model-variants.json")
-      const tmpPath = finalPath + ".tmp"
+      // Always write through a per-invocation tmp file before renaming, so
+      // readers never see partial JSON and concurrent plugin loads do not
+      // race over the same tmp path. See issues #766 and #786.
+      const finalPath = path.join(cacheDir, MODEL_VARIANTS_CACHE_FILE)
+      tmpPath = path.join(cacheDir, `${MODEL_VARIANTS_CACHE_FILE}.${randomBytes(3).toString("hex")}.tmp`)
       await writeFile(tmpPath, JSON.stringify(variants, null, 2))
       await rename(tmpPath, finalPath)
+      tmpPath = undefined
     } catch (err) {
       console.error("[model-variants] cache refresh failed:", err)
+    } finally {
+      if (tmpPath) {
+        await removeOwnTempFile(tmpPath)
+      }
     }
   }
 
