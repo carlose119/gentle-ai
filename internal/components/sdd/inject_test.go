@@ -1718,7 +1718,7 @@ func TestInjectOpenCodeMultiMode(t *testing.T) {
 	}
 
 	// Verify representative sub-agents are present.
-	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "review-risk", "review-readability", "review-reliability", "review-resilience"} {
+	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "review-risk", "review-readability", "review-reliability", "review-resilience"} {
 		if _, ok := agentMap[subAgent]; !ok {
 			t.Fatalf("missing sub-agent %q", subAgent)
 		}
@@ -2054,12 +2054,12 @@ func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 		t.Fatalf("agent key has unexpected type: %T", agentRaw)
 	}
 
-	// Empty mode defaults to single — gentle-orchestrator + 10 SDD sub-agents + 4 review agents = 15 agents.
+	// Empty mode defaults to single — gentle-orchestrator + 10 SDD sub-agents + 3 JD agents + 4 review agents = 18 agents.
 	if _, ok := agentMap["gentle-orchestrator"]; !ok {
 		t.Fatal("missing gentle-orchestrator agent")
 	}
-	if len(agentMap) != 15 {
-		t.Fatalf("agent count = %d, want 15", len(agentMap))
+	if len(agentMap) != 18 {
+		t.Fatalf("agent count = %d, want 18", len(agentMap))
 	}
 
 	// Verify orchestrator mode is "primary".
@@ -2074,9 +2074,21 @@ func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 	if mode, _ := orchestratorAgent["mode"].(string); mode != "primary" {
 		t.Fatalf("gentle-orchestrator mode = %q, want %q", mode, "primary")
 	}
+	permissionRaw, ok := orchestratorAgent["permission"].(map[string]any)
+	if !ok {
+		t.Fatalf("gentle-orchestrator permission has unexpected type: %T", orchestratorAgent["permission"])
+	}
+	taskRaw, ok := permissionRaw["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("gentle-orchestrator permission.task has unexpected type: %T", permissionRaw["task"])
+	}
+	taskAllowlist := taskRaw
+	if taskReplace, ok := taskRaw["__replace__"].(map[string]any); ok {
+		taskAllowlist = taskReplace
+	}
 
 	// Verify sub-agents are present with mode "subagent".
-	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "review-risk", "review-readability", "review-reliability", "review-resilience"} {
+	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "review-risk", "review-readability", "review-reliability", "review-resilience"} {
 		raw, ok := agentMap[subAgent]
 		if !ok {
 			t.Fatalf("missing sub-agent %q", subAgent)
@@ -2087,6 +2099,9 @@ func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 		}
 		if m, _ := agent["mode"].(string); m != "subagent" {
 			t.Fatalf("%s mode = %q, want %q", subAgent, m, "subagent")
+		}
+		if got, ok := taskAllowlist[subAgent].(string); !ok || got != "allow" {
+			t.Fatalf("gentle-orchestrator permission.task[%s] = %v, want allow", subAgent, taskAllowlist[subAgent])
 		}
 	}
 }
@@ -2138,10 +2153,13 @@ func TestInjectOpenCodeSingleToMultiSwitch(t *testing.T) {
 
 	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
 
-	// Single mode now has orchestrator + 9 sub-agents (same as multi).
+	// Single mode has the orchestrator and all SDD/JD/review sub-agents.
 	content, _ := os.ReadFile(settingsPath)
 	if !strings.Contains(string(content), `"sdd-apply"`) {
 		t.Fatal("single mode should have sdd-apply")
+	}
+	if !strings.Contains(string(content), `"jd-judge-a"`) || !strings.Contains(string(content), `"jd-judge-b"`) || !strings.Contains(string(content), `"jd-fix-agent"`) {
+		t.Fatal("single mode should have Judgment Day agents")
 	}
 
 	// Second: inject multi mode — structure stays the same (both have all agents),
@@ -2540,7 +2558,7 @@ func TestInjectSingleModeIgnoresModelAssignments(t *testing.T) {
 		t.Fatalf("ReadFile(opencode.json) error = %v", err)
 	}
 
-	// Single mode has no sub-agents, so model should not appear.
+	// Single mode keeps sub-agents model-free, so explicit model assignments should not appear.
 	if strings.Contains(string(content), `"model"`) {
 		t.Fatal("single mode should not inject model assignments")
 	}

@@ -509,10 +509,9 @@ func TestDefaultOverlayTaskPermissions_ExplicitAllowlist(t *testing.T) {
 	tests := []struct {
 		name      string
 		assetPath string
-		includeJD bool // multi overlay includes JD agents; single does not
 	}{
-		{name: "single", assetPath: "opencode/sdd-overlay-single.json", includeJD: false},
-		{name: "multi", assetPath: "opencode/sdd-overlay-multi.json", includeJD: true},
+		{name: "single", assetPath: "opencode/sdd-overlay-single.json"},
+		{name: "multi", assetPath: "opencode/sdd-overlay-multi.json"},
 	}
 
 	for _, tt := range tests {
@@ -533,12 +532,6 @@ func TestDefaultOverlayTaskPermissions_ExplicitAllowlist(t *testing.T) {
 			}
 
 			expected := expectedTaskPermissions("")
-			if !tt.includeJD {
-				// Single overlay does not include JD agent permissions.
-				for _, jd := range opencode.JDPhases() {
-					delete(expected, jd)
-				}
-			}
 			assertExactTaskPermissions(t, taskMap, expected)
 		})
 	}
