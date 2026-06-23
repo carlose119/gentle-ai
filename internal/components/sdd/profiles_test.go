@@ -1044,6 +1044,53 @@ func TestExtractModelFromAgent_OpenRouterFreeModel(t *testing.T) {
 	}
 }
 
+// TestDetectProfiles_OpenRouterFreeModel verifies that DetectProfiles
+// correctly parses OpenRouter free-model specs when detecting profiles.
+func TestDetectProfiles_OpenRouterFreeModel(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "opencode.json")
+
+	content := `{
+  "agent": {
+    "sdd-orchestrator-openr": { "mode": "primary", "model": "openrouter/qwen/qwen3.6-plus:free" },
+    "sdd-apply-openr": { "mode": "subagent", "model": "openrouter/qwen/qwen3.6-plus:free" }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	profiles, err := DetectProfiles(settingsPath)
+	if err != nil {
+		t.Fatalf("DetectProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("DetectProfiles() returned %d profiles, want 1", len(profiles))
+	}
+
+	p := profiles[0]
+	if p.Name != "openr" {
+		t.Errorf("Profile.Name = %q, want %q", p.Name, "openr")
+	}
+	if p.OrchestratorModel.ProviderID != "openrouter" {
+		t.Errorf("OrchestratorModel.ProviderID = %q, want %q", p.OrchestratorModel.ProviderID, "openrouter")
+	}
+	if p.OrchestratorModel.ModelID != "qwen/qwen3.6-plus:free" {
+		t.Errorf("OrchestratorModel.ModelID = %q, want %q", p.OrchestratorModel.ModelID, "qwen/qwen3.6-plus:free")
+	}
+
+	m, ok := p.PhaseAssignments["sdd-apply"]
+	if !ok {
+		t.Fatal("sdd-apply missing from PhaseAssignments")
+	}
+	if m.ProviderID != "openrouter" {
+		t.Errorf("PhaseAssignments[sdd-apply] ProviderID = %q, want %q", m.ProviderID, "openrouter")
+	}
+	if m.ModelID != "qwen/qwen3.6-plus:free" {
+		t.Errorf("PhaseAssignments[sdd-apply] ModelID = %q, want %q", m.ModelID, "qwen/qwen3.6-plus:free")
+	}
+}
+
 // TestGenerateProfileOverlay_VariantInjected verifies that a profile
 // phase assignment with Effort="medium" results in "variant":"medium"
 // in the generated overlay JSON.
