@@ -159,7 +159,7 @@ func TestAdapterInstallCommandSequenceUsesNpmWhenPnpmIsUnavailable(t *testing.T)
 		{"pi", "install", "npm:gentle-engram"},
 		{"pi", "install", "npm:pi-mcp-adapter"},
 		{"npm", "exec", "--yes", "--package", "gentle-engram@latest", "--", "pi-engram", "init"},
-		piSubagentsFixedInstallCommand(system.PlatformProfile{}),
+		piSubagentsInstallCommand(system.PlatformProfile{}),
 		{"pi", "install", "npm:pi-intercom"},
 		{"pi", "install", "npm:@juicesharp/rpiv-ask-user-question"},
 		{"pi", "install", "npm:pi-web-access"},
@@ -191,10 +191,11 @@ func TestAdapterInstallCommandSequenceUsesWindowsPowerShellForSubagents(t *testi
 		t.Fatalf("InstallCommand()[4] = %#v, want PowerShell command", got)
 	}
 	for _, want := range []string{
-		"$env:USERPROFILE\\.pi\\agent\\vendor\\pi-subagents-fixed",
-		"git clone --depth 1 https://github.com/Gentleman-Programming/gentle-pi.git",
-		"gentle-pi\\vendor\\pi-subagents-fixed",
-		"npm install --omit=dev --prefix $packageDir",
+		"$env:USERPROFILE\\.pi\\agent\\vendor\\pi-subagents",
+		"$cloneDir = Join-Path $tmp 'pi-subagents'",
+		"git clone --depth 1 https://github.com/nicobailon/pi-subagents.git $cloneDir",
+		"npm install --omit=dev --prefix $cloneDir",
+		"Copy-Item -Recurse $cloneDir $packageDir",
 		"pi install $packageDir",
 	} {
 		if !strings.Contains(got[3], want) {

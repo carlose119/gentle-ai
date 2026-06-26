@@ -229,7 +229,7 @@ For the full Pi command and package reference, see [Pi Agent](pi.md).
   - `pi install npm:gentle-engram`
   - `pi install npm:pi-mcp-adapter`
   - `npm exec --yes --package gentle-engram@latest -- pi-engram init`
-  - clone `https://github.com/Gentleman-Programming/gentle-pi.git` to a temp dir, copy `vendor/pi-subagents-fixed` to `$HOME/.pi/agent/vendor/pi-subagents-fixed`, run `npm install --omit=dev` there, then `pi install $HOME/.pi/agent/vendor/pi-subagents-fixed`
+  - clone `https://github.com/nicobailon/pi-subagents.git` to a temp dir, run `npm install --omit=dev` there, copy it to `$HOME/.pi/agent/vendor/pi-subagents`, then `pi install $HOME/.pi/agent/vendor/pi-subagents`
   - `pi install npm:pi-intercom`
   - `pi install npm:@juicesharp/rpiv-ask-user-question`
   - `pi install npm:pi-web-access`
@@ -241,7 +241,7 @@ For the full Pi command and package reference, see [Pi Agent](pi.md).
 - **Model assignment command**: `gentle-pi` owns Pi model selection through `/gentleman:models` (`/gentle-ai:models` remains a compatibility alias). It opens a Pi-native modal for project, user, and built-in agents, prioritizes SDD agents, saves `.pi/gentle-ai/models.json`, and applies overrides into `.pi/agents/*.md` or `.pi/settings.json`.
 - **`gentle-engram` package**: adds persistent Engram memory for Pi. It captures sessions, exposes Engram MCP tools through `pi-mcp-adapter`, and degrades safely when the local `engram` binary is missing.
 - **MCP adapter wiring**: ComponentEngram declares `npm:pi-mcp-adapter` in `.pi/agent/settings.json` packages and adds `pi-mcp-adapter` `^2.6.0` to `.pi/npm/package.json` without removing unrelated user entries. `pi-engram init` owns the Pi Engram MCP config schema and is run during installation.
-- **`vendor/pi-subagents-fixed` package**: discovers and runs SDD agents from `.pi/agents/`; Gentle AI installs the vendored package from `Gentleman-Programming/gentle-pi` instead of upstream `@tintinweb/pi-subagents`.
+- **`pi-subagents` package**: discovers and runs SDD agents from `.pi/agents/`; Gentle AI installs it from `https://github.com/nicobailon/pi-subagents` into `$HOME/.pi/agent/vendor/pi-subagents` before running `pi install` on that local package.
 - **`pi-intercom` package**: lets Pi child agents ask the parent session for decisions while a chain is running.
 - **`@juicesharp/rpiv-ask-user-question` package**: lets Pi child agents ask the active user session for clarification when they need human input.
 - **Pi companion packages**: `pi-web-access`, `@juicesharp/rpiv-todo`, and `pi-btw` add web access, todo tracking, and companion workflow support.

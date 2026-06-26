@@ -25,25 +25,25 @@ const (
 	piSettingsFile           = "settings.json"
 	piNPMDirectory           = "npm"
 	piNPMPackageFile         = "package.json"
-	piSubagentsFixedRepo     = "https://github.com/Gentleman-Programming/gentle-pi.git"
-	piSubagentsFixedPath     = "$HOME/.pi/agent/vendor/pi-subagents-fixed"
+	piSubagentsRepo          = "https://github.com/nicobailon/pi-subagents.git"
+	piSubagentsPath          = "$HOME/.pi/agent/vendor/pi-subagents"
 )
 
-func piSubagentsFixedInstallCommand(profile system.PlatformProfile) []string {
+func piSubagentsInstallCommand(profile system.PlatformProfile) []string {
 	if profile.OS == "windows" {
-		packagePath := `$env:USERPROFILE\.pi\agent\vendor\pi-subagents-fixed`
+		packagePath := `$env:USERPROFILE\.pi\agent\vendor\pi-subagents`
 		return []string{
 			"powershell",
 			"-NoProfile",
 			"-Command",
-			"$ErrorActionPreference = 'Stop'; $packageDir = \"" + packagePath + "\"; $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString()); New-Item -ItemType Directory -Path $tmp | Out-Null; try { git clone --depth 1 " + piSubagentsFixedRepo + " (Join-Path $tmp 'gentle-pi'); if (Test-Path $packageDir) { Remove-Item -Recurse -Force $packageDir }; New-Item -ItemType Directory -Force -Path (Split-Path $packageDir) | Out-Null; Copy-Item -Recurse (Join-Path $tmp 'gentle-pi\\vendor\\pi-subagents-fixed') $packageDir; npm install --omit=dev --prefix $packageDir; pi install $packageDir } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }",
+			"$ErrorActionPreference = 'Stop'; $packageDir = \"" + packagePath + "\"; $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString()); $cloneDir = Join-Path $tmp 'pi-subagents'; New-Item -ItemType Directory -Path $tmp | Out-Null; try { git clone --depth 1 " + piSubagentsRepo + " $cloneDir; npm install --omit=dev --prefix $cloneDir; if (Test-Path $packageDir) { Remove-Item -Recurse -Force $packageDir }; New-Item -ItemType Directory -Force -Path (Split-Path $packageDir) | Out-Null; Copy-Item -Recurse $cloneDir $packageDir; pi install $packageDir } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }",
 		}
 	}
 
 	return []string{
 		"sh",
 		"-c",
-		": \"${HOME:?HOME is required}\" && tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT && git clone --depth 1 " + piSubagentsFixedRepo + " \"$tmp/gentle-pi\" && rm -rf \"" + piSubagentsFixedPath + "\" && mkdir -p \"$(dirname \"" + piSubagentsFixedPath + "\")\" && cp -R \"$tmp/gentle-pi/vendor/pi-subagents-fixed\" \"" + piSubagentsFixedPath + "\" && npm install --omit=dev --prefix \"" + piSubagentsFixedPath + "\" && pi install \"" + piSubagentsFixedPath + "\"",
+		": \"${HOME:?HOME is required}\" && tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT && git clone --depth 1 " + piSubagentsRepo + " \"$tmp/pi-subagents\" && npm install --omit=dev --prefix \"$tmp/pi-subagents\" && rm -rf \"" + piSubagentsPath + "\" && mkdir -p \"$(dirname \"" + piSubagentsPath + "\")\" && cp -R \"$tmp/pi-subagents\" \"" + piSubagentsPath + "\" && pi install \"" + piSubagentsPath + "\"",
 	}
 }
 
@@ -94,7 +94,7 @@ func (a *Adapter) InstallCommand(profile system.PlatformProfile) ([][]string, er
 		{"pi", "install", "npm:gentle-engram"},
 		{"pi", "install", "npm:pi-mcp-adapter"},
 		a.engramInitCommand(),
-		piSubagentsFixedInstallCommand(profile),
+		piSubagentsInstallCommand(profile),
 		{"pi", "install", "npm:pi-intercom"},
 		{"pi", "install", "npm:@juicesharp/rpiv-ask-user-question"},
 		{"pi", "install", "npm:pi-web-access"},

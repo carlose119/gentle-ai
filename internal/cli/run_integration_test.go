@@ -197,7 +197,7 @@ func TestPiAgentInstallRunsPackageCommandsWhenPiAlreadyInstalled(t *testing.T) {
 		"pi install npm:gentle-engram",
 		"pi install npm:pi-mcp-adapter",
 		engramInitCommandForTest(),
-		"sh -c : \"${HOME:?HOME is required}\" && tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT && git clone --depth 1 https://github.com/Gentleman-Programming/gentle-pi.git \"$tmp/gentle-pi\" && rm -rf \"$HOME/.pi/agent/vendor/pi-subagents-fixed\" && mkdir -p \"$(dirname \"$HOME/.pi/agent/vendor/pi-subagents-fixed\")\" && cp -R \"$tmp/gentle-pi/vendor/pi-subagents-fixed\" \"$HOME/.pi/agent/vendor/pi-subagents-fixed\" && npm install --omit=dev --prefix \"$HOME/.pi/agent/vendor/pi-subagents-fixed\" && pi install \"$HOME/.pi/agent/vendor/pi-subagents-fixed\"",
+		"sh -c : \"${HOME:?HOME is required}\" && tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT && git clone --depth 1 https://github.com/nicobailon/pi-subagents.git \"$tmp/pi-subagents\" && npm install --omit=dev --prefix \"$tmp/pi-subagents\" && rm -rf \"$HOME/.pi/agent/vendor/pi-subagents\" && mkdir -p \"$(dirname \"$HOME/.pi/agent/vendor/pi-subagents\")\" && cp -R \"$tmp/pi-subagents\" \"$HOME/.pi/agent/vendor/pi-subagents\" && pi install \"$HOME/.pi/agent/vendor/pi-subagents\"",
 		"pi install npm:pi-intercom",
 		"pi install npm:@juicesharp/rpiv-ask-user-question",
 		"pi install npm:pi-web-access",
