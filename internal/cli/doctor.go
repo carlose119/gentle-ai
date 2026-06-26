@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -40,9 +41,9 @@ type DoctorReport struct {
 var knownTools = []string{"gentle-ai", "engram", "gga", "claude", "opencode"}
 
 const (
-	engramHealthEnvVar    = "ENGRAM_BASE_URL"
-	diskWarnThreshold     = int64(100 * 1024 * 1024) // 100 MB
-	diskFailThreshold     = int64(10 * 1024 * 1024)  // 10 MB
+	engramHealthEnvVar = "ENGRAM_BASE_URL"
+	diskWarnThreshold  = int64(100 * 1024 * 1024) // 100 MB
+	diskFailThreshold  = int64(10 * 1024 * 1024)  // 10 MB
 )
 
 // Overridable for testing.
@@ -50,6 +51,8 @@ var (
 	lookPathFn          = exec.LookPath
 	availableBytesFn    = storage.AvailableBytes
 	osUserHomeDirDoctor = os.UserHomeDir
+	doctorGOOS          = runtime.GOOS
+	executableExtsFn    = executableExtensions
 	pathDirsFn          = func() []string {
 		return filepath.SplitList(os.Getenv("PATH"))
 	}
@@ -90,7 +93,7 @@ func checkToolBinaries(pathDirs []string) []CheckResult {
 }
 
 func checkOneTool(tool string, pathDirs []string) CheckResult {
-	resolved, err := lookPathFn(tool)
+	resolved, shim, err := resolveDoctorTool(tool)
 	if err != nil {
 		return CheckResult{
 			Name:   "tool:" + tool,
@@ -100,13 +103,7 @@ func checkOneTool(tool string, pathDirs []string) CheckResult {
 		}
 	}
 
-	var copies []string
-	for _, dir := range pathDirs {
-		if _, statErr := os.Stat(filepath.Join(dir, tool)); statErr == nil {
-			copies = append(copies, filepath.Join(dir, tool))
-		}
-	}
-
+	copies := doctorToolCopies(tool, pathDirs)
 	if len(copies) > 1 {
 		return CheckResult{
 			Name:   "tool:" + tool,
@@ -116,11 +113,107 @@ func checkOneTool(tool string, pathDirs []string) CheckResult {
 		}
 	}
 
+	detail := tool + " found at " + resolved
+	if shim != "" {
+		detail += " (" + shim + ")"
+	}
 	return CheckResult{
 		Name:   "tool:" + tool,
 		Status: CheckStatusPass,
-		Detail: tool + " found at " + resolved,
+		Detail: detail,
 	}
+}
+
+func resolveDoctorTool(tool string) (string, string, error) {
+	resolved, err := lookPathFn(tool)
+	if err == nil {
+		return resolved, "", nil
+	}
+	if doctorGOOS != "windows" {
+		return "", "", err
+	}
+	resolved, ps1Err := lookPathFn(tool + ".ps1")
+	if ps1Err != nil {
+		return "", "", err
+	}
+	return resolved, "PowerShell shim", nil
+}
+
+func doctorToolCopies(tool string, pathDirs []string) []string {
+	seenDirs := make(map[string]struct{}, len(pathDirs))
+	copies := make([]string, 0, len(pathDirs))
+	for _, dir := range pathDirs {
+		cleanDir := filepath.Clean(dir)
+		if _, seen := seenDirs[cleanDir]; seen {
+			continue
+		}
+		if p := toolInDir(dir, tool); p != "" {
+			seenDirs[cleanDir] = struct{}{}
+			copies = append(copies, p)
+		}
+	}
+	return copies
+}
+
+// executableExtensions returns the filename suffixes to probe when scanning a
+// PATH directory for a tool binary. On Windows it mirrors exec.LookPath, which
+// resolves a bare name like "gentle-ai" to "gentle-ai.exe"/".cmd" via PATHEXT;
+// on other platforms the bare name is used as-is. Without this, the duplicate
+// scan never matches real Windows binaries and PATH shadowing goes unreported.
+func executableExtensions() []string {
+	return executableExtensionsFor(doctorGOOS, os.Getenv("PATHEXT"))
+}
+
+func executableExtensionsFor(goos, pathext string) []string {
+	if goos != "windows" {
+		return []string{""}
+	}
+	if pathext == "" {
+		return []string{".com", ".exe", ".bat", ".cmd"}
+	}
+	var exts []string
+	for _, e := range strings.Split(pathext, ";") {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if !strings.HasPrefix(e, ".") {
+			e = "." + e
+		}
+		exts = append(exts, e)
+	}
+	return exts
+}
+
+// toolInDir returns the path to tool's executable inside dir, or "" if absent.
+// It honors Windows executable extensions so the duplicate scan agrees with
+// exec.LookPath (used for the resolved path).
+func toolInDir(dir, tool string) string {
+	for _, ext := range doctorToolExecutableExts() {
+		candidate := filepath.Join(dir, tool+ext)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func doctorToolExecutableExts() []string {
+	exts := append([]string(nil), executableExtsFn()...)
+	if doctorGOOS == "windows" {
+		exts = appendUniqueExt(exts, "")
+		exts = appendUniqueExt(exts, ".ps1")
+	}
+	return exts
+}
+
+func appendUniqueExt(exts []string, ext string) []string {
+	for _, existing := range exts {
+		if strings.EqualFold(existing, ext) {
+			return exts
+		}
+	}
+	return append(exts, ext)
 }
 
 // checkStateJSON validates ~/.gentle-ai/state.json and agent config dirs.
