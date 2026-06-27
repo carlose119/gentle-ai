@@ -16,36 +16,21 @@ import (
 )
 
 const (
-	piMCPAdapterPackage      = "npm:pi-mcp-adapter"
-	piMCPAdapterPackageSpec  = "npm:pi-mcp-adapter"
-	piMCPAdapterDependency   = "pi-mcp-adapter"
-	piMCPAdapterVersion      = "2.6.0"
-	piMCPAdapterVersionRange = "^2.6.0"
-	piAppendSystemFile       = "APPEND_SYSTEM.md"
-	piEngramMCPConfigFile    = "mcp.json"
-	piSettingsFile           = "settings.json"
-	piNPMDirectory           = "npm"
-	piNPMPackageFile         = "package.json"
-	piSubagentsRepo          = "https://github.com/nicobailon/pi-subagents.git"
-	piSubagentsPath          = "$HOME/.pi/agent/vendor/pi-subagents"
+	piMCPAdapterPackage         = "npm:pi-mcp-adapter"
+	piMCPAdapterPackageSpec     = "npm:pi-mcp-adapter"
+	piMCPAdapterDependency      = "pi-mcp-adapter"
+	piMCPAdapterVersion         = "2.6.0"
+	piMCPAdapterVersionRange    = "^2.6.0"
+	piAppendSystemFile          = "APPEND_SYSTEM.md"
+	piEngramMCPConfigFile       = "mcp.json"
+	piSettingsFile              = "settings.json"
+	piNPMDirectory              = "npm"
+	piNPMPackageFile            = "package.json"
+	piSubagentsJ0k3rPackageSpec = "npm:pi-subagents-j0k3r"
 )
 
-func piSubagentsInstallCommand(profile system.PlatformProfile) []string {
-	if profile.OS == "windows" {
-		packagePath := `$env:USERPROFILE\.pi\agent\vendor\pi-subagents`
-		return []string{
-			"powershell",
-			"-NoProfile",
-			"-Command",
-			"$ErrorActionPreference = 'Stop'; $packageDir = \"" + packagePath + "\"; $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString()); $cloneDir = Join-Path $tmp 'pi-subagents'; New-Item -ItemType Directory -Path $tmp | Out-Null; try { git clone --depth 1 " + piSubagentsRepo + " $cloneDir; npm install --omit=dev --prefix $cloneDir; if (Test-Path $packageDir) { Remove-Item -Recurse -Force $packageDir }; New-Item -ItemType Directory -Force -Path (Split-Path $packageDir) | Out-Null; Copy-Item -Recurse $cloneDir $packageDir; pi install $packageDir } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }",
-		}
-	}
-
-	return []string{
-		"sh",
-		"-c",
-		": \"${HOME:?HOME is required}\" && tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT && git clone --depth 1 " + piSubagentsRepo + " \"$tmp/pi-subagents\" && npm install --omit=dev --prefix \"$tmp/pi-subagents\" && rm -rf \"" + piSubagentsPath + "\" && mkdir -p \"$(dirname \"" + piSubagentsPath + "\")\" && cp -R \"$tmp/pi-subagents\" \"" + piSubagentsPath + "\" && pi install \"" + piSubagentsPath + "\"",
-	}
+func piSubagentsInstallCommand(system.PlatformProfile) []string {
+	return []string{"pi", "install", piSubagentsJ0k3rPackageSpec}
 }
 
 type statResult struct {

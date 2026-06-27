@@ -99,7 +99,7 @@ func piInstallCommands() []string {
 		"pi install npm:gentle-engram",
 		"pi install npm:pi-mcp-adapter",
 		"npm exec --yes --package gentle-engram@latest -- pi-engram init",
-		"sh -c 'clone https://github.com/nicobailon/pi-subagents.git and pi install $HOME/.pi/agent/vendor/pi-subagents'",
+		"pi install npm:pi-subagents-j0k3r",
 		"pi install npm:pi-intercom",
 		"pi install npm:@juicesharp/rpiv-ask-user-question",
 		"pi install npm:pi-web-access",
