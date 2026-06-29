@@ -1384,6 +1384,166 @@ func TestOrchestratorsRequireAutomaticGatekeeper(t *testing.T) {
 	}
 }
 
+func TestSDDOrchestratorsRouteFreshReviewsToConcreteReviewLenses(t *testing.T) {
+	t.Run("rejects section-only weak routing fixture", func(t *testing.T) {
+		weakContent := `### Mandatory Delegation Triggers (Non-Skippable)
+3. **PR rule**: before commit, push, or PR after code changes, run verification unless the diff is trivial docs/text.
+4. **Incident rule**: after wrong cwd or merge recovery, stop and run a fresh audit before continuing.
+6. **Fresh review rule**: use fresh context for adversarial review of diffs, conflicts, PR readiness, and incidents.
+
+#### Review Lens Selection
+- review-risk
+- review-resilience
+- review-readability
+- review-reliability
+- If multiple rows match, run the narrow set that covers the risk.
+`
+		if problems := concreteReviewLensRoutingProblems(weakContent); len(problems) == 0 {
+			t.Fatal("section-only fixture should fail because trigger rules do not route to concrete review lenses")
+		}
+	})
+
+	paths := []string{
+		"antigravity/sdd-orchestrator.md",
+		"claude/sdd-orchestrator.md",
+		"codex/sdd-orchestrator.md",
+		"cursor/sdd-orchestrator.md",
+		"gemini/sdd-orchestrator.md",
+		"generic/sdd-orchestrator.md",
+		"hermes/sdd-orchestrator.md",
+		"kimi/sdd-orchestrator.md",
+		"kiro/sdd-orchestrator.md",
+		"opencode/sdd-orchestrator.md",
+		"qwen/sdd-orchestrator.md",
+		"windsurf/sdd-orchestrator.md",
+	}
+	required := []string{
+		"Review Lens Selection",
+		"review-risk",
+		"review-resilience",
+		"review-readability",
+		"review-reliability",
+		"If multiple rows match, run the narrow set that covers the risk",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			content := MustRead(path)
+			section := markdownSection(content, "#### Review Lens Selection")
+			if section == "" {
+				t.Fatalf("%s missing Review Lens Selection section", path)
+			}
+			for _, want := range required {
+				if !strings.Contains(section, want) {
+					t.Fatalf("%s Review Lens Selection section missing %q", path, want)
+				}
+			}
+			if problems := concreteReviewLensRoutingProblems(content); len(problems) > 0 {
+				t.Fatalf("%s fresh-review guidance does not route to concrete review lenses: %s", path, strings.Join(problems, "; "))
+			}
+		})
+	}
+}
+
+func concreteReviewLensRoutingProblems(content string) []string {
+	triggerSection := firstMarkdownSection(content,
+		"### Mandatory Delegation Triggers",
+		"#### Mandatory Phase-Boundary Triggers",
+	)
+	if triggerSection == "" {
+		return []string{"missing Mandatory Delegation Triggers or Mandatory Phase-Boundary Triggers section"}
+	}
+
+	checks := []struct {
+		label    string
+		matcher  func(string) bool
+		contract string
+	}{
+		{
+			label:    "PR rule",
+			matcher:  lineContainsAll("concrete", "Review Lens Selection"),
+			contract: "must select concrete lens(es) through Review Lens Selection",
+		},
+		{
+			label:    "Incident rule",
+			matcher:  lineContainsAll("concrete", "Review Lens Selection"),
+			contract: "must route fresh incident audit/review through Review Lens Selection",
+		},
+		{
+			label:    "Fresh review rule",
+			matcher:  lineContainsAny("selected concrete review lens", "fresh concrete review lens", "fresh-context review lens"),
+			contract: "must require a selected fresh concrete review lens",
+		},
+	}
+
+	var problems []string
+	for _, check := range checks {
+		line := markdownLineContaining(triggerSection, "**"+check.label+"**")
+		if line == "" {
+			problems = append(problems, check.label+": missing trigger rule")
+			continue
+		}
+		if !check.matcher(line) {
+			problems = append(problems, check.label+": "+check.contract)
+		}
+	}
+	return problems
+}
+
+func firstMarkdownSection(content string, headings ...string) string {
+	for _, heading := range headings {
+		if section := markdownSection(content, heading); section != "" {
+			return section
+		}
+	}
+	return ""
+}
+
+func markdownLineContaining(content, needle string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
+}
+
+func lineContainsAll(needles ...string) func(string) bool {
+	return func(line string) bool {
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func lineContainsAny(needles ...string) func(string) bool {
+	return func(line string) bool {
+		for _, needle := range needles {
+			if strings.Contains(line, needle) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func markdownSection(content, heading string) string {
+	start := strings.Index(content, heading)
+	if start == -1 {
+		return ""
+	}
+	section := content[start:]
+	end := len(section)
+	for _, levelHeading := range []string{"\n#### ", "\n### ", "\n## "} {
+		if next := strings.Index(section[len(heading):], levelHeading); next != -1 {
+			end = min(end, len(heading)+next)
+		}
+	}
+	return section[:end]
+}
+
 func TestSDDOrchestratorAssetsScopedToDedicatedAgent(t *testing.T) {
 	for _, assetPath := range []string{
 		"generic/sdd-orchestrator.md",

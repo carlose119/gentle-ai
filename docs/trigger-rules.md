@@ -54,7 +54,7 @@ The built-in default set follows a three-tier cost model:
 
 **Tier 2 — Strong (hot paths / large diffs)**
 
-- `pre-pr` on `**/auth/**`, `**/update/**`, or `**/security/**` paths, OR when the diff exceeds 400 changed lines: run all four 4R review lenses (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) in parallel.
+- `pre-pr` on `**/auth/**`, `**/update/**`, `**/security/**`, or `**/payments/**` paths, OR when the diff exceeds 400 changed lines: run all four 4R review lenses (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) in parallel.
   Cost: ~4x. Reserved for high-risk changes.
 
 **Tier 3 — Strong (high-stakes SDD phases)**

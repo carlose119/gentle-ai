@@ -584,9 +584,27 @@ func TestInjectOpenCodePreservesExistingOrchestratorPromptWhenRequested(t *testi
 		"Semantic guard",
 		"execution, not delegation",
 		"not a substitute for delegation",
+		"run the concrete review lens(es) selected by Review Lens Selection",
+		"run the concrete audit/review lens(es) selected by Review Lens Selection",
+		"use fresh context with the selected concrete review lens(es)",
+		"#### Review Lens Selection",
+		"`reviewer` is an intent, not a concrete installed agent",
+		"`review-readability`",
+		"`review-reliability`",
+		"`review-resilience`",
+		"`review-risk`",
 	} {
 		if !strings.Contains(text, wanted) {
 			t.Fatalf("opencode.json missing migrated preserved prompt hard gate %q", wanted)
+		}
+	}
+	for _, stale := range []string{
+		"run a fresh-context review unless the diff is trivial docs/text",
+		"run a fresh audit before continuing",
+		"use fresh context for adversarial review of diffs",
+	} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("opencode.json retained stale generic review routing %q", stale)
 		}
 	}
 }
@@ -600,7 +618,7 @@ func TestInjectOpenCodeMigratesPreservedLegacyOrchestratorPromptReferences(t *te
 		t.Fatalf("MkdirAll(settings dir) error = %v", err)
 	}
 
-	const stalePrompt = "# Gentle AI — SDD Orchestrator Instructions\n\nBind this to the dedicated `sdd-orchestrator` agent only.\n\n- Treat `agent.sdd-orchestrator.model` as authoritative when it is set.\n"
+	const stalePrompt = "# Gentle AI — SDD Orchestrator Instructions\n\nBind this to the dedicated `sdd-orchestrator` agent only.\n\n- Treat `agent.sdd-orchestrator.model` as authoritative when it is set.\n\n### Mandatory Delegation Triggers (Non-Skippable)\n\n3. **PR rule**: before commit, push, or PR after code changes, run a fresh-context review unless the diff is trivial docs/text.\n4. **Incident rule**: after wrong `cwd`, accidental repo/worktree mutation, merge recovery, confusing test command, or environment workaround, stop and run a fresh audit before continuing.\n6. **Fresh review rule**: use fresh context for adversarial review of diffs, conflicts, PR readiness, and incidents; use continuity/forked context only for implementation work that needs inherited state.\n"
 	seed := `{
   "agent": {
     "gentle-orchestrator": {
@@ -628,6 +646,9 @@ func TestInjectOpenCodeMigratesPreservedLegacyOrchestratorPromptReferences(t *te
 	for _, unwanted := range []string{
 		"Bind this to the dedicated `sdd-orchestrator` agent only.",
 		"agent.sdd-orchestrator.model",
+		"run a fresh-context review unless the diff is trivial docs/text",
+		"run a fresh audit before continuing",
+		"use fresh context for adversarial review of diffs",
 	} {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("opencode.json still contains stale preserved prompt reference %q", unwanted)
@@ -669,6 +690,14 @@ func TestInjectOpenCodeMigratesPreservedLegacyOrchestratorPromptReferences(t *te
 		"Semantic guard",
 		"execution, not delegation",
 		"not a substitute for delegation",
+		"run the concrete review lens(es) selected by Review Lens Selection",
+		"run the concrete audit/review lens(es) selected by Review Lens Selection",
+		"use fresh context with the selected concrete review lens(es)",
+		"#### Review Lens Selection",
+		"`review-readability`",
+		"`review-reliability`",
+		"`review-resilience`",
+		"`review-risk`",
 	} {
 		if !strings.Contains(text, wanted) {
 			t.Fatalf("opencode.json missing migrated preserved prompt reference %q", wanted)
