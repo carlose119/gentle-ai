@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -258,15 +259,42 @@ func gentleAIUpgradeVersionFromTUI(finalModel tea.Model) (string, bool) {
 }
 
 func runSkillRegistry(args []string, stdout io.Writer) error {
-	if len(args) == 0 || args[0] != "refresh" {
-		return fmt.Errorf("usage: gentle-ai skill-registry refresh [--cwd <dir>] [--force] [--quiet] [--no-gitignore]")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: gentle-ai skill-registry <refresh|list> [flags]")
 	}
+	switch args[0] {
+	case "refresh":
+		return runSkillRegistryRefresh(args[1:], stdout)
+	case "list":
+		return runSkillRegistryList(args[1:], stdout)
+	default:
+		return fmt.Errorf("unknown skill-registry command %q (want refresh or list)", args[0])
+	}
+}
 
+// resolveSkillRegistryDirs resolves the working directory (defaulting to the
+// process cwd) and the user home directory used to locate skills.
+func resolveSkillRegistryDirs(cwd string) (string, string, error) {
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return "", "", fmt.Errorf("resolve cwd: %w", err)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return cwd, home, nil
+}
+
+func runSkillRegistryRefresh(args []string, stdout io.Writer) error {
 	cwd := ""
 	force := false
 	quiet := false
 	ensureGitignore := true
-	for i := 1; i < len(args); i++ {
+	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--force", "-f":
 			force = true
@@ -281,19 +309,12 @@ func runSkillRegistry(args []string, stdout io.Writer) error {
 			cwd = args[i+1]
 			i++
 		default:
-			return fmt.Errorf("unknown skill-registry argument %q", args[i])
+			return fmt.Errorf("unknown skill-registry refresh argument %q", args[i])
 		}
 	}
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("resolve cwd: %w", err)
-		}
-	}
-	home, err := os.UserHomeDir()
+	cwd, home, err := resolveSkillRegistryDirs(cwd)
 	if err != nil {
-		return fmt.Errorf("resolve home directory: %w", err)
+		return err
 	}
 	if ensureGitignore {
 		if err := skillregistry.EnsureATLIgnored(cwd); err != nil {
@@ -310,6 +331,63 @@ func runSkillRegistry(args []string, stdout io.Writer) error {
 		} else {
 			_, _ = fmt.Fprintf(stdout, "Skill registry up to date (%s): %s\n", result.Reason, result.Registry)
 		}
+	}
+	return nil
+}
+
+func runSkillRegistryList(args []string, stdout io.Writer) error {
+	cwd := ""
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--cwd":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--cwd requires a value")
+			}
+			cwd = args[i+1]
+			i++
+		default:
+			return fmt.Errorf("unknown skill-registry list argument %q", args[i])
+		}
+	}
+	cwd, home, err := resolveSkillRegistryDirs(cwd)
+	if err != nil {
+		return err
+	}
+	entries := skillregistry.List(cwd, home)
+
+	if asJSON {
+		type row struct {
+			Name        string `json:"name"`
+			Scope       string `json:"scope"`
+			Description string `json:"description"`
+			Path        string `json:"path"`
+		}
+		rows := make([]row, 0, len(entries))
+		for _, e := range entries {
+			rows = append(rows, row{
+				Name:        e.Name,
+				Scope:       skillregistry.ScopeForPath(cwd, e.Path),
+				Description: e.Description,
+				Path:        e.Path,
+			})
+		}
+		data, err := json.MarshalIndent(rows, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+
+	if len(entries) == 0 {
+		_, _ = fmt.Fprintln(stdout, "No skills found.")
+		return nil
+	}
+	for _, e := range entries {
+		_, _ = fmt.Fprintf(stdout, "%s\t%s\t%s\n", e.Name, skillregistry.ScopeForPath(cwd, e.Path), e.Path)
 	}
 	return nil
 }

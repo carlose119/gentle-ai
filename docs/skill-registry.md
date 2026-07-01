@@ -118,6 +118,25 @@ Compact rules were cheaper per delegation but could distort skills. The index-fi
 | Compact summaries | Small prompt injection | Can lose nuance and break custom skills |
 | Index + paths | Preserves full skill intent | Subagents read selected full skills |
 
+## Excluded Skills
+
+The registry never indexes `_shared`, `skill-registry`, or any `sdd-*` skill.
+The first two are internal plumbing; `sdd-*` skills are orchestrator-managed by
+the SDD workflow, not delegator-selected. This exclusion is intentional and
+silent, so a user skill whose name collides with these prefixes is dropped
+without a warning.
+
+## Inspecting Without Writing
+
+`skill-registry list` resolves the same deduplicated skill set as `refresh`, but
+prints it instead of writing `.atl/skill-registry.md`, the cache, or
+`.gitignore`. Handy for debugging what a delegator would see.
+
+```bash
+gentle-ai skill-registry list          # name<TAB>scope<TAB>path
+gentle-ai skill-registry list --json   # machine-readable, includes descriptions
+```
+
 ## Quick Check
 
 ```bash

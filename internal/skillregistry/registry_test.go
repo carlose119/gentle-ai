@@ -395,7 +395,7 @@ func TestParseFrontmatterHandlesCRLF(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotName, gotDesc, _ := parseFrontmatter(tc.source)
+			gotName, gotDesc := parseFrontmatter(tc.source)
 			if gotName != tc.wantName {
 				t.Errorf("name = %q, want %q", gotName, tc.wantName)
 			}
@@ -403,6 +403,102 @@ func TestParseFrontmatterHandlesCRLF(t *testing.T) {
 				t.Errorf("description = %q, want %q", gotDesc, tc.wantDesc)
 			}
 		})
+	}
+}
+
+func TestFindAllSkillFilesFollowsSymlinkedSkillDir(t *testing.T) {
+	cwd := t.TempDir()
+	home := t.TempDir()
+	// A real skill living outside the project, linked in as a project skill.
+	// filepath.WalkDir would silently skip this; the one-level scan must not.
+	realDir := filepath.Join(t.TempDir(), "linked-skill")
+	writeSkill(t, filepath.Join(realDir, "SKILL.md"), `---
+name: linked
+description: linked via symlink
+---
+
+## Hard Rules
+
+- ok
+`)
+	linkParent := filepath.Join(cwd, "skills")
+	if err := os.MkdirAll(linkParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(linkParent, "linked")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	result, err := Regenerate(cwd, home, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SkillCount != 1 {
+		t.Fatalf("SkillCount = %d, want 1 (symlinked skill dir must be indexed)", result.SkillCount)
+	}
+	registry := readFile(t, filepath.Join(cwd, RegistryRelPath))
+	if !strings.Contains(registry, "`linked`") || !strings.Contains(registry, "linked via symlink") {
+		t.Fatalf("registry missing symlinked skill:\n%s", registry)
+	}
+}
+
+func TestRegenerateIgnoresNestedSkillMd(t *testing.T) {
+	cwd := t.TempDir()
+	home := t.TempDir()
+	writeSkill(t, filepath.Join(cwd, "skills", "parent", "SKILL.md"), `---
+name: parent
+description: top-level skill
+---
+
+## Hard Rules
+
+- ok
+`)
+	// A SKILL.md bundled as an example inside the skill must not be indexed.
+	writeSkill(t, filepath.Join(cwd, "skills", "parent", "examples", "SKILL.md"), `---
+name: nested-example
+description: should not be indexed
+---
+
+## Hard Rules
+
+- no
+`)
+
+	result, err := Regenerate(cwd, home, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SkillCount != 1 {
+		t.Fatalf("SkillCount = %d, want 1 (nested SKILL.md must be ignored)", result.SkillCount)
+	}
+	registry := readFile(t, filepath.Join(cwd, RegistryRelPath))
+	if strings.Contains(registry, "nested-example") || strings.Contains(registry, "should not be indexed") {
+		t.Fatalf("nested SKILL.md leaked into registry:\n%s", registry)
+	}
+}
+
+func TestListReturnsDedupedEntriesWithoutWriting(t *testing.T) {
+	cwd := t.TempDir()
+	home := t.TempDir()
+	writeSkill(t, filepath.Join(home, ".claude", "skills", "dup", "SKILL.md"), "---\nname: dup\ndescription: user copy\n---\n")
+	writeSkill(t, filepath.Join(cwd, "skills", "dup", "SKILL.md"), "---\nname: dup\ndescription: project copy\n---\n")
+	writeSkill(t, filepath.Join(cwd, "skills", "solo", "SKILL.md"), "---\nname: solo\ndescription: solo\n---\n")
+
+	entries := List(cwd, home)
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	// Sorted by name: dup, solo. The project copy of dup must win.
+	if entries[0].Name != "dup" || entries[0].Description != "project copy" {
+		t.Fatalf("entries[0] = %#v, want project dup", entries[0])
+	}
+	if got := ScopeForPath(cwd, entries[0].Path); got != "project" {
+		t.Fatalf("dup scope = %q, want project", got)
+	}
+	// List is read-only: it must not write the registry or cache.
+	if _, err := os.Stat(filepath.Join(cwd, RegistryRelPath)); !os.IsNotExist(err) {
+		t.Fatalf("List wrote registry (stat err = %v), want it absent", err)
 	}
 }
 

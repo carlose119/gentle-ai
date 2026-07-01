@@ -23,6 +23,12 @@ const (
 	atlIgnoreEntry  = ".atl/"
 )
 
+// Excluded skills never appear in the registry. This policy is intentionally
+// hardcoded and applied silently: `_shared` and `skill-registry` are internal
+// plumbing, and `sdd-*` skills are orchestrator-managed via the SDD workflow,
+// not delegator-selected. NOTE: a user skill whose name collides with these
+// (e.g. any name starting with `sdd-`) is dropped without warning. Revisit as
+// configuration if that collision ever becomes a real constraint.
 var (
 	excludeNames    = map[string]bool{"_shared": true, "skill-registry": true}
 	excludePrefixes = []string{"sdd-"}
@@ -33,7 +39,6 @@ type SkillEntry struct {
 	Name        string
 	Path        string
 	Description string
-	Scope       string
 }
 
 type Result struct {
@@ -161,6 +166,26 @@ func Regenerate(cwd, home string, force bool) (Result, error) {
 	return Result{Regenerated: true, SkillCount: len(entries), Reason: reason, Registry: registryPath, Cache: cachePath}, nil
 }
 
+// List resolves the deduplicated, sorted set of skills that Regenerate would
+// index, without writing the registry, cache, or .gitignore. It is the
+// read-only inspection path behind `gentle-ai skill-registry list`.
+func List(cwd, home string) []SkillEntry {
+	cwd = filepath.Clean(cwd)
+	home = filepath.Clean(home)
+	existingDirs := uniqueExistingDirs(append(ProjectSkillDirs(cwd), UserSkillDirs(home)...))
+	files, err := findAllSkillFiles(existingDirs)
+	if err != nil {
+		return nil
+	}
+	entries := make([]SkillEntry, 0, len(files))
+	for _, file := range files {
+		if entry, ok := LoadSkill(file); ok {
+			entries = append(entries, entry)
+		}
+	}
+	return dedupeBySkillName(entries, cwd)
+}
+
 func EnsureATLIgnored(cwd string) error {
 	gitignorePath := filepath.Join(cwd, ".gitignore")
 	existingBytes, err := os.ReadFile(gitignorePath)
@@ -182,7 +207,12 @@ func EnsureATLIgnored(cwd string) error {
 	if !strings.Contains(existing, "# Local AI runtime state") && !strings.Contains(existing, "# Local Pi runtime state") {
 		header = "# Local AI runtime state\n"
 	}
-	return os.WriteFile(gitignorePath, []byte(existing+prefix+header+atlIgnoreEntry+"\n"), 0o644)
+	// Atomic write guards against concurrent startup hooks (Codex + OpenCode +
+	// Claude) racing on .gitignore, matching how the registry file is written.
+	if _, err := filemerge.WriteFileAtomic(gitignorePath, []byte(existing+prefix+header+atlIgnoreEntry+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
+	return nil
 }
 
 func Fingerprint(files []string) string {
@@ -206,14 +236,13 @@ func LoadSkill(file string) (SkillEntry, bool) {
 	if err != nil {
 		return SkillEntry{}, false
 	}
-	name, desc, body := parseFrontmatter(string(data))
+	name, desc := parseFrontmatter(string(data))
 	if strings.TrimSpace(name) == "" {
 		name = filepath.Base(filepath.Dir(file))
 	}
 	if isExcluded(name) {
 		return SkillEntry{}, false
 	}
-	_ = body
 	return SkillEntry{Name: name, Path: file, Description: desc}, true
 }
 
@@ -234,10 +263,7 @@ func RenderRegistry(cwd string, sources []string, entries []SkillEntry) string {
 	lines = append(lines, "| Skill | Trigger / description | Scope | Path |")
 	lines = append(lines, "| --- | --- | --- | --- |")
 	for _, entry := range entries {
-		scope := entry.Scope
-		if scope == "" {
-			scope = scopeForPath(cwd, entry.Path)
-		}
+		scope := ScopeForPath(cwd, entry.Path)
 		lines = append(lines, fmt.Sprintf("| `%s` | %s | %s | `%s` |", markdownCell(entry.Name), markdownCell(entry.Description), markdownCell(scope), markdownCell(entry.Path)))
 	}
 	lines = append(lines, "", "## Loading protocol", "")
@@ -248,20 +274,30 @@ func RenderRegistry(cwd string, sources []string, entries []SkillEntry) string {
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
 }
 
+// findAllSkillFiles scans each root exactly one level deep for
+// <root>/<skill>/SKILL.md, the Agent Skills layout. A single-level scan is
+// deliberate: it follows symlinked skill directories (dotfiles/nix setups,
+// which filepath.WalkDir silently skips) and never indexes nested fixture or
+// example SKILL.md files that would otherwise pollute the registry with
+// phantom entries named after their parent directory.
 func findAllSkillFiles(dirs []string) ([]string, error) {
 	var out []string
 	for _, root := range dirs {
-		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if !d.IsDir() && d.Name() == "SKILL.md" {
-				out = append(out, path)
-			}
-			return nil
-		})
+		entries, err := os.ReadDir(root)
 		if err != nil {
-			return nil, err
+			continue
+		}
+		for _, entry := range entries {
+			// dirExists/fileExists use os.Stat, so symlinked skill dirs and
+			// symlinked SKILL.md files are resolved instead of skipped.
+			skillDir := filepath.Join(root, entry.Name())
+			if !dirExists(skillDir) {
+				continue
+			}
+			candidate := filepath.Join(skillDir, "SKILL.md")
+			if fileExists(candidate) {
+				out = append(out, candidate)
+			}
 		}
 	}
 	return out, nil
@@ -281,19 +317,18 @@ func uniqueExistingDirs(dirs []string) []string {
 	return out
 }
 
-func parseFrontmatter(source string) (name, description, body string) {
+func parseFrontmatter(source string) (name, description string) {
 	source = strings.ReplaceAll(source, "\r\n", "\n")
 	source = strings.ReplaceAll(source, "\r", "\n")
 	if !strings.HasPrefix(source, "---\n") {
-		return "", "", source
+		return "", ""
 	}
 	end := strings.Index(source[4:], "\n---")
 	if end == -1 {
-		return "", "", source
+		return "", ""
 	}
 	end += 4
 	fm := source[4:end]
-	body = strings.TrimPrefix(source[end+4:], "\n")
 	lines := strings.Split(fm, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -328,7 +363,7 @@ func parseFrontmatter(source string) (name, description, body string) {
 			description = value
 		}
 	}
-	return name, description, body
+	return name, description
 }
 
 func dedupeBySkillName(entries []SkillEntry, cwd string) []SkillEntry {
@@ -352,7 +387,9 @@ func dedupeBySkillName(entries []SkillEntry, cwd string) []SkillEntry {
 	return out
 }
 
-func scopeForPath(cwd, path string) string {
+// ScopeForPath reports whether a skill path is project-local or user-global,
+// relative to cwd.
+func ScopeForPath(cwd, path string) string {
 	projectPrefix := filepath.Clean(cwd) + string(os.PathSeparator)
 	if strings.HasPrefix(filepath.Clean(path), projectPrefix) {
 		return "project"
