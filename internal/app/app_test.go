@@ -424,6 +424,114 @@ func TestTuiSyncTargetAgentsFallsBackToDiscoveredAgents(t *testing.T) {
 	}
 }
 
+func TestTuiSyncIncludesCodexPermissions(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{string(model.AgentCodex)}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	initial := `[permissions.gentle-dev.filesystem]
+":slash_tmp" = "write"
+":tmpdir" = "write"
+
+[permissions.gentle-dev.filesystem.":workspace_roots"]
+"**/*.key" = "deny"
+"**/*.pem" = "deny"
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	changed, err := tuiSync(home)(nil)
+	if err != nil {
+		t.Fatalf("tuiSync Codex permissions error: %v", err)
+	}
+	if len(changed) == 0 {
+		t.Fatal("tuiSync Codex permissions changed 0 files, want config.toml updated")
+	}
+
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", configPath, err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `[permissions.gentle-dev.filesystem]`) || !strings.Contains(text, `glob_scan_max_depth = 6`) {
+		t.Fatalf("Codex permissions sync should add glob_scan_max_depth to filesystem profile; got:\n%s", text)
+	}
+	if count := strings.Count(text, `glob_scan_max_depth = 6`); count != 1 {
+		t.Fatalf("glob_scan_max_depth count = %d, want 1; got:\n%s", count, text)
+	}
+	if !strings.Contains(text, `"**/*.key" = "deny"`) || !strings.Contains(text, `"**/*.pem" = "deny"`) {
+		t.Fatalf("Codex permissions sync should preserve deny rules; got:\n%s", text)
+	}
+
+	changed, err = tuiSync(home)(nil)
+	if err != nil {
+		t.Fatalf("second tuiSync Codex permissions error: %v", err)
+	}
+	body, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) after second sync: %v", configPath, err)
+	}
+	text = string(body)
+	if count := strings.Count(text, `glob_scan_max_depth = 6`); count != 1 {
+		t.Fatalf("second sync glob_scan_max_depth count = %d, want 1; got:\n%s", count, text)
+	}
+}
+
+func TestTuiSyncIncludesCodexPermissionsForTargetedOverrides(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{string(model.AgentPi)}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	initial := `[permissions.gentle-dev.filesystem]
+":slash_tmp" = "write"
+":tmpdir" = "write"
+
+[permissions.gentle-dev.filesystem.":workspace_roots"]
+"**/*.key" = "deny"
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := tuiSync(home)(&model.SyncOverrides{TargetAgents: []model.AgentID{model.AgentCodex}})
+	if err != nil {
+		t.Fatalf("targeted tuiSync Codex permissions error: %v", err)
+	}
+
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", configPath, err)
+	}
+	text := string(body)
+	if count := strings.Count(text, `glob_scan_max_depth = 6`); count != 1 {
+		t.Fatalf("targeted sync glob_scan_max_depth count = %d, want 1; got:\n%s", count, text)
+	}
+	if !strings.Contains(text, `"**/*.key" = "deny"`) {
+		t.Fatalf("targeted sync should preserve Codex deny rules; got:\n%s", text)
+	}
+}
+
+func TestDeferredSyncIncludesCodexPermissionsArgs(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{string(model.AgentCodex)}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	args := syncArgsForDiscoveredAgents(home)
+	if len(args) != 1 || args[0] != "--include-permissions" {
+		t.Fatalf("syncArgsForDiscoveredAgents() = %v, want [--include-permissions]", args)
+	}
+}
+
 func TestTuiSyncClaudeModelConfigWritesSelectedAssignments(t *testing.T) {
 	home := t.TempDir()
 	if err := state.Write(home, state.InstallState{InstalledAgents: []string{string(model.AgentPi)}}); err != nil {
@@ -1580,6 +1688,80 @@ func TestRunArgs_PendingSync_RunsSyncAndClearsFlag(t *testing.T) {
 	}
 	if s.PendingSync {
 		t.Errorf("PendingSync = true after successful deferred sync, want false")
+	}
+}
+
+func TestRunArgsPendingSyncRepairsCodexPermissions(t *testing.T) {
+	home := t.TempDir()
+	setupMockHome(t, home)
+
+	if err := state.Write(home, state.InstallState{
+		InstalledAgents: []string{string(model.AgentCodex)},
+		PendingSync:     true,
+	}); err != nil {
+		t.Fatalf("state.Write() error = %v", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	initial := `[permissions.gentle-dev.filesystem]
+":slash_tmp" = "write"
+":tmpdir" = "write"
+
+[permissions.gentle-dev.filesystem.":workspace_roots"]
+"**/*.key" = "deny"
+"**/*.pem" = "deny"
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	origSelf := selfUpdateFn
+	origEnsure := ensureCurrentOSSupported
+	origDetect := detectSystem
+	origRunTUI := runTUI
+	t.Cleanup(func() {
+		selfUpdateFn = origSelf
+		ensureCurrentOSSupported = origEnsure
+		detectSystem = origDetect
+		runTUI = origRunTUI
+	})
+
+	selfUpdateFn = func(_ context.Context, _ string, _ system.PlatformProfile, _ io.Writer) error {
+		return nil
+	}
+	ensureCurrentOSSupported = func() error { return nil }
+	detectSystem = func(context.Context) (system.DetectionResult, error) {
+		return system.DetectionResult{System: system.SystemInfo{Supported: true, Profile: system.PlatformProfile{OS: "linux", PackageManager: "apt", Supported: true}}}, nil
+	}
+	runTUI = func(m tea.Model, _ ...tea.ProgramOption) (tea.Model, error) {
+		return m, nil
+	}
+
+	var buf bytes.Buffer
+	if err := RunArgs(nil, &buf); err != nil {
+		t.Fatalf("RunArgs(nil) error = %v", err)
+	}
+
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", configPath, err)
+	}
+	text := string(body)
+	if count := strings.Count(text, `glob_scan_max_depth = 6`); count != 1 {
+		t.Fatalf("deferred sync glob_scan_max_depth count = %d, want 1; got:\n%s", count, text)
+	}
+	if !strings.Contains(text, `"**/*.key" = "deny"`) || !strings.Contains(text, `"**/*.pem" = "deny"`) {
+		t.Fatalf("deferred sync should preserve Codex deny rules; got:\n%s", text)
+	}
+
+	s, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read() error = %v", err)
+	}
+	if s.PendingSync {
+		t.Fatal("PendingSync = true after successful Codex deferred sync, want false")
 	}
 }
 

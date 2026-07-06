@@ -46,7 +46,11 @@ var (
 	// cli.RunSync is idempotent (re-reads state + re-applies configs each call),
 	// so retrying on failure (spec scenario "deferred sync fails → retry") is safe.
 	deferredSyncFn = func() error {
-		_, err := cli.RunSync(nil)
+		args := []string(nil)
+		if h, err := os.UserHomeDir(); err == nil {
+			args = syncArgsForDiscoveredAgents(h)
+		}
+		_, err := cli.RunSync(args)
 		return err
 	}
 )
@@ -557,7 +561,8 @@ func tuiUpgrade(profile system.PlatformProfile, homeDir string) tui.UpgradeFunc 
 func tuiSync(homeDir string) tui.SyncFunc {
 	return func(overrides *model.SyncOverrides) ([]string, error) {
 		agentIDs := syncAgentIDs(homeDir, overrides)
-		selection := cli.BuildSyncSelection(cli.SyncFlags{}, agentIDs)
+		syncFlags := cli.SyncFlags{IncludePermissions: syncShouldIncludePermissions(agentIDs)}
+		selection := cli.BuildSyncSelection(syncFlags, agentIDs)
 
 		// Load persisted model assignments so a plain sync (no overrides)
 		// preserves the user's previous choices instead of falling back
@@ -616,6 +621,22 @@ func syncAgentIDs(homeDir string, overrides *model.SyncOverrides) []model.AgentI
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+func syncShouldIncludePermissions(agentIDs []model.AgentID) bool {
+	for _, id := range agentIDs {
+		if id == model.AgentCodex {
+			return true
+		}
+	}
+	return false
+}
+
+func syncArgsForDiscoveredAgents(homeDir string) []string {
+	if syncShouldIncludePermissions(cli.DiscoverAgents(homeDir)) {
+		return []string{"--include-permissions"}
+	}
+	return nil
 }
 
 // applyOverrides merges non-nil fields from overrides into selection.
