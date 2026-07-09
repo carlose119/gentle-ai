@@ -947,7 +947,9 @@ func migratePreservedOpenCodeOrchestratorPrompt(prompt string) string {
 		"",
 	)
 	migrated := removeLegacyOpenCodePlainChatPreflightLines(replacer.Replace(prompt))
-	return ensurePreservedOpenCodeDelegationHardGates(ensurePreservedOpenCodeOrchestratorPreflight(migrated))
+	migrated = ensurePreservedOpenCodeOrchestratorPreflight(migrated)
+	migrated = ensurePreservedOpenCodeDelegationHardGates(migrated)
+	return ensurePreservedOpenCodeReviewExecutionContract(migrated)
 }
 
 func removeLegacyOpenCodePlainChatPreflightLines(prompt string) string {
@@ -1107,6 +1109,67 @@ Full 4R is reserved for tier 3; a standard diff never fans out to multiple lense
 	}
 
 	return strings.TrimRight(prompt, "\n") + delegation
+}
+
+func ensurePreservedOpenCodeReviewExecutionContract(prompt string) string {
+	const (
+		startMarker = "<!-- gentle-ai:review-execution-contract-migration -->"
+		endMarker   = "<!-- /gentle-ai:review-execution-contract-migration -->"
+		heading     = "#### Review Execution Contract"
+		nextHeading = "#### Cost and Context Balance"
+	)
+
+	source := assets.MustRead(sddOrchestratorAsset(model.AgentOpenCode))
+	start := strings.Index(source, heading)
+	end := strings.Index(source, nextHeading)
+	if start < 0 || end <= start {
+		return prompt
+	}
+	canonical := strings.TrimSpace(source[start:end])
+	block := startMarker + "\n" + canonical + "\n" + endMarker
+
+	if markerStart := strings.Index(prompt, startMarker); markerStart >= 0 {
+		if relativeEnd := strings.Index(prompt[markerStart:], endMarker); relativeEnd >= 0 {
+			markerEnd := markerStart + relativeEnd + len(endMarker)
+			return replacePreservedPromptSection(prompt, markerStart, markerEnd, block)
+		}
+	}
+
+	if headingStart := strings.Index(prompt, heading); headingStart >= 0 {
+		headingEnd := len(prompt)
+		remainder := prompt[headingStart+len(heading):]
+		for _, candidate := range []string{"\n#### ", "\n### ", "\n## ", "\n# "} {
+			if relativeEnd := strings.Index(remainder, candidate); relativeEnd >= 0 {
+				candidateEnd := headingStart + len(heading) + relativeEnd + 1
+				if candidateEnd < headingEnd {
+					headingEnd = candidateEnd
+				}
+			}
+		}
+		return replacePreservedPromptSection(prompt, headingStart, headingEnd, block)
+	}
+
+	return strings.TrimRight(prompt, "\n") + "\n\n" + block + "\n"
+}
+
+func replacePreservedPromptSection(prompt string, start, end int, replacement string) string {
+	prefix := strings.TrimRight(prompt[:start], "\n")
+	suffix := strings.TrimLeft(prompt[end:], "\n")
+
+	var b strings.Builder
+	if prefix != "" {
+		b.WriteString(prefix)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(replacement)
+	if suffix != "" {
+		b.WriteString("\n\n")
+		b.WriteString(suffix)
+	}
+	if strings.HasSuffix(prompt, "\n") && !strings.HasSuffix(b.String(), "\n") {
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func ensurePreservedOpenCodeOrchestratorPreflight(prompt string) string {

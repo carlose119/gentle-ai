@@ -64,21 +64,38 @@ The first pass MUST emit a structured findings ledger. Each entry MUST identify 
 
 ### Requirement: Adversarial verification of high-severity candidates
 
-Only BLOCKER/CRITICAL candidates MUST be adversarially verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. In a standard review, one refuter agent MUST attempt to refute each BLOCKER/CRITICAL candidate; a refuted candidate MUST be recorded with status `refuted` and MUST never enter the fix loop. In a full-4R review, a panel of 3 refuters with distinct lenses (correctness, exploitability/impact, reproducibility) MUST attempt the refutation; a finding is killed only if at least 2 of 3 refuters refute it — ties favor keeping the finding. A refuter MUST present concrete counter-evidence; "seems unlikely" does not refute.
+Only BLOCKER/CRITICAL candidates MUST be adversarially verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. A standard review MUST run exactly one general refuter pass total over the complete merged candidate list and receive one verdict per finding. A full-4R review MUST run exactly three refuter passes total (correctness, exploitability/impact, reproducibility); each pass receives that same complete list and returns one verdict per finding. The task ceiling is structural and review-level — 1 standard or 3 full-4R regardless of candidate count — and the system MUST NOT spawn one refuter task per candidate. Full-4R voting is independent per finding: at least 2 of 3 `refuted` verdicts refute that finding, while a 1-of-3 result or tie keeps it. Any malformed or missing per-finding verdict defaults to `stands`. A refuter MUST present concrete counter-evidence; "seems unlikely" does not refute.
 
-#### Scenario: Standard review uses a single refuter
+#### Scenario: Standard review uses one batched refuter total
 
-- GIVEN a standard review produces a BLOCKER candidate
+- GIVEN a standard review produces multiple BLOCKER/CRITICAL candidates
 - WHEN adversarial verification runs
-- THEN exactly one refuter attempts to refute the candidate
-- AND if the refutation succeeds, the finding is recorded with status `refuted` and never enters the fix loop
+- THEN exactly one general refuter pass receives the complete candidate list
+- AND it returns one verdict per finding
+- AND each successfully refuted finding is recorded with status `refuted` and never enters the fix loop
 
-#### Scenario: Full-4R review uses a 3-refuter panel with a 2-of-3 kill rule
+#### Scenario: Full-4R review uses three batched lenses with a per-finding 2-of-3 rule
 
-- GIVEN a full-4R review produces a CRITICAL candidate
-- WHEN the 3-refuter panel (correctness, exploitability/impact, reproducibility) evaluates it
-- THEN the finding is killed only if at least 2 of 3 refuters refute it
-- AND a 1-of-3 refutation keeps the finding actionable
+- GIVEN a full-4R review produces multiple CRITICAL candidates
+- WHEN the three refuter lenses (correctness, exploitability/impact, reproducibility) evaluate them
+- THEN exactly three refuter passes total each receive the complete candidate list
+- AND each finding is killed only if at least 2 of 3 lens verdicts refute that finding
+- AND a 1-of-3 result or tie keeps that finding actionable
+
+#### Scenario: Refuter task count does not scale with findings
+
+- GIVEN a standard or full-4R review produces 2 or 20 BLOCKER/CRITICAL candidates
+- WHEN adversarial verification runs
+- THEN the standard review runs exactly 1 refuter task or inline pass total
+- AND the full-4R review runs exactly 3 refuter tasks or inline passes total
+- AND no task or pass is created per candidate
+
+#### Scenario: Missing or malformed verdict stands
+
+- GIVEN a batched refuter omits one candidate or returns a malformed verdict for it
+- WHEN the orchestrator merges refutation results
+- THEN that finding's verdict defaults to `stands`
+- AND other well-formed per-finding verdicts remain independently usable
 
 #### Scenario: Low-severity findings are never verified
 
@@ -166,7 +183,7 @@ A re-review pass MUST receive ONLY the persisted ledger and the fix diff as inpu
 
 ### Requirement: Judgment-day follows the same contract
 
-Judgment-day's judge agents (jd-judge-a, jd-judge-b) MUST apply the same sweep budget, precision gate, and persisted-ledger contract, and the re-judge pass following jd-fix-agent MUST follow the same scoped re-review contract and convergence budget as the 4R lenses. Judgment-day's real/theoretical distinction collapses onto `severity=WARNING` plus `status` (`open` vs `info`), so judgment-day and the 4R lenses write the same ledger table.
+Judgment-day's judge agents (jd-judge-a, jd-judge-b) MUST apply the same sweep budget, precision gate, and persisted-ledger contract, and the re-judge pass following jd-fix-agent MUST follow the same scoped re-review contract and convergence budget as the 4R lenses. Two-judge convergence itself satisfies adversarial verification, so judgment-day MUST NOT spawn review refuters. Every judgment-day warning keeps canonical `severity=WARNING` and `status=info`; real/theoretical MAY be recorded as a separate assessment but MUST NOT alter severity or status. WARNING/SUGGESTION rows never enter fix or re-review loops.
 
 #### Scenario: Judgment-day first pass is budgeted and ledgered
 
@@ -181,17 +198,26 @@ Judgment-day's judge agents (jd-judge-a, jd-judge-b) MUST apply the same sweep b
 - THEN it MUST verify ledger findings and review only fix-touched lines
 - AND it MUST respect the two-fix-round convergence budget
 
+#### Scenario: Judgment-day warning stays informational
+
+- GIVEN either judge reports a warning assessed as real or theoretical
+- WHEN the merged ledger is written
+- THEN its canonical severity is `WARNING`
+- AND its canonical status is `info`, never `open`
+- AND it does not enter the fix or re-judge loop
+
 ---
 
 ### Requirement: Contract coverage across adapter variants and execution modes
 
-The sweep-budget, precision-gate, ledger, adversarial-verification, severity-floor, convergence-budget, and scoped re-review contract MUST be present across all 13 supported adapter variants and both execution modes: subagent mode (adapters with dedicated review-* and jd-* subagents: Claude, Kiro, Cursor, Kimi — each subagent returns its own ledger rows and the orchestrator merges them) and inline mode (all other supported adapters, where the orchestrator runs each lens sequentially and maintains the merged ledger directly).
+The sweep-budget, precision-gate, ledger, adversarial-verification, severity-floor, convergence-budget, and scoped re-review contract MUST be present across all 13 supported adapter variants and both execution modes. Dedicated-agent adapters (Claude, Kiro, Cursor, Kimi, OpenCode/Kilocode) merge review-agent ledger rows and run exactly 1 batched refuter task for standard review or 3 for full-4R; only the 3 full-4R tasks may run in parallel. Inline adapters run review lenses sequentially and MUST override generic delegation wording for refutation: they run one general pass or three sequential lens passes inside the orchestrator, each over the complete merged candidate list, without spawning refuter tasks.
 
 #### Scenario: Both execution modes carry the contract
 
 - GIVEN an adapter with dedicated subagents, or one without
 - WHEN its review-*/jd-* assets, or its orchestrator's inline-lens section, are inspected
 - THEN they MUST contain the sweep-budget, precision-gate, ledger, adversarial-verification, severity-floor, convergence-budget, and scoped re-review contract worded for that execution mode
+- AND inline adapters MUST state that their sequential in-orchestrator refutation clause overrides generic delegation wording
 
 #### Scenario: No adapter variant is left uncovered
 

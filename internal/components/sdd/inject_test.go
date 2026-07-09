@@ -865,6 +865,92 @@ func TestInjectOpenCodeUpgradesV1DelegationLensTable(t *testing.T) {
 	}
 }
 
+func TestInjectOpenCodeUpgradesPreservedV1ReviewExecutionContract(t *testing.T) {
+	home := t.TempDir()
+	mockNoPackageManager(t)
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(settings dir) error = %v", err)
+	}
+
+	const staleV1Prompt = `# External profile prompt
+
+Keep this user-authored orchestration policy unchanged.
+
+#### Review Execution Contract
+
+Run an exhaustive review pass, then repeat until a dry pass.
+All severities enter the fix and re-review loop.
+WARNING findings use status open when assessed as real.
+Launch three refuters per candidate before fixing.
+
+#### User-Owned Policy
+
+PRESERVE_THIS_UNRELATED_SECTION exactly as authored.
+`
+	seed := `{
+  "agent": {
+    "gentle-orchestrator": {
+      "mode": "primary",
+      "prompt": ` + strconv.Quote(staleV1Prompt) + `
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(seed), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	opts := InjectOptions{PreserveOpenCodeOrchestratorPrompt: true}
+	if _, err := Inject(home, opencodeAdapter(), model.SDDModeMulti, opts); err != nil {
+		t.Fatalf("first Inject() error = %v", err)
+	}
+
+	prompt := readGentleOrchestratorPrompt(t, settingsPath)
+	assertTextContainsClauses(t, "migrated preserved OpenCode prompt", prompt, requiredLedgerClauses)
+	assertTextContainsClauses(t, "migrated preserved OpenCode prompt", prompt, []string{requiredOrchestratorMergeModeClause})
+	for _, preserved := range []string{
+		"Keep this user-authored orchestration policy unchanged.",
+		"#### User-Owned Policy",
+		"PRESERVE_THIS_UNRELATED_SECTION exactly as authored.",
+	} {
+		if !strings.Contains(prompt, preserved) {
+			t.Errorf("migrated prompt lost unrelated user content %q", preserved)
+		}
+	}
+	for _, stale := range []string{
+		"repeat until a dry pass",
+		"All severities enter the fix and re-review loop",
+		"WARNING findings use status open",
+		"three refuters per candidate",
+	} {
+		if strings.Contains(prompt, stale) {
+			t.Errorf("migrated prompt retained stale v1 review semantics %q", stale)
+		}
+	}
+	if got := strings.Count(prompt, "#### Review Execution Contract"); got != 1 {
+		t.Fatalf("migrated prompt has %d Review Execution Contract headings, want 1", got)
+	}
+	if got := strings.Count(prompt, "<!-- gentle-ai:review-execution-contract-migration -->"); got != 1 {
+		t.Fatalf("migrated prompt has %d review-contract migration markers, want 1", got)
+	}
+
+	if _, err := Inject(home, opencodeAdapter(), model.SDDModeMulti, opts); err != nil {
+		t.Fatalf("second Inject() error = %v", err)
+	}
+	secondPrompt := readGentleOrchestratorPrompt(t, settingsPath)
+	if secondPrompt != prompt {
+		diffAt := 0
+		for diffAt < len(prompt) && diffAt < len(secondPrompt) && prompt[diffAt] == secondPrompt[diffAt] {
+			diffAt++
+		}
+		start := max(0, diffAt-80)
+		firstEnd := min(len(prompt), diffAt+160)
+		secondEnd := min(len(secondPrompt), diffAt+160)
+		t.Fatalf("preserved v1 Review Execution Contract migration is not idempotent at byte %d\nfirst:  %q\nsecond: %q", diffAt, prompt[start:firstEnd], secondPrompt[start:secondEnd])
+	}
+}
+
 func TestInjectOpenCodeMigratesPartialPreflightPrompt(t *testing.T) {
 	home := t.TempDir()
 	mockNoPackageManager(t)
@@ -1912,9 +1998,10 @@ func TestInjectOpenCodeMultiMode(t *testing.T) {
 		t.Fatalf("agent key has unexpected type: %T", agentRaw)
 	}
 
-	// Multi overlay must contain gentle-orchestrator + 10 SDD sub-agents + 3 JD agents + 4 review agents = 18 agents.
-	if len(agentMap) != 18 {
-		t.Fatalf("agent count = %d, want 18", len(agentMap))
+	// Multi overlay must contain gentle-orchestrator + 10 SDD sub-agents +
+	// 3 JD agents + 4 review agents + 1 batched refuter = 19 agents.
+	if len(agentMap) != 19 {
+		t.Fatalf("agent count = %d, want 19", len(agentMap))
 	}
 
 	// Verify gentle-orchestrator is present.
@@ -1938,7 +2025,7 @@ func TestInjectOpenCodeMultiMode(t *testing.T) {
 	}
 
 	// Verify representative sub-agents are present.
-	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "review-risk", "review-readability", "review-reliability", "review-resilience"} {
+	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "review-risk", "review-readability", "review-reliability", "review-resilience", "review-refuter"} {
 		if _, ok := agentMap[subAgent]; !ok {
 			t.Fatalf("missing sub-agent %q", subAgent)
 		}
@@ -2274,12 +2361,13 @@ func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 		t.Fatalf("agent key has unexpected type: %T", agentRaw)
 	}
 
-	// Empty mode defaults to single — gentle-orchestrator + 10 SDD sub-agents + 3 JD agents + 4 review agents = 18 agents.
+	// Empty mode defaults to single — gentle-orchestrator + 10 SDD sub-agents +
+	// 3 JD agents + 4 review agents + 1 batched refuter = 19 agents.
 	if _, ok := agentMap["gentle-orchestrator"]; !ok {
 		t.Fatal("missing gentle-orchestrator agent")
 	}
-	if len(agentMap) != 18 {
-		t.Fatalf("agent count = %d, want 18", len(agentMap))
+	if len(agentMap) != 19 {
+		t.Fatalf("agent count = %d, want 19", len(agentMap))
 	}
 
 	// Verify orchestrator mode is "primary".
@@ -2308,7 +2396,7 @@ func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 	}
 
 	// Verify sub-agents are present with mode "subagent".
-	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "review-risk", "review-readability", "review-reliability", "review-resilience"} {
+	for _, subAgent := range []string{"sdd-init", "sdd-apply", "sdd-verify", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-archive", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "review-risk", "review-readability", "review-reliability", "review-resilience", "review-refuter"} {
 		raw, ok := agentMap[subAgent]
 		if !ok {
 			t.Fatalf("missing sub-agent %q", subAgent)
@@ -2323,6 +2411,10 @@ func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 		if got, ok := taskAllowlist[subAgent].(string); !ok || got != "allow" {
 			t.Fatalf("gentle-orchestrator permission.task[%s] = %v, want allow", subAgent, taskAllowlist[subAgent])
 		}
+	}
+	refuterTools := agentMap["review-refuter"].(map[string]any)["tools"].(map[string]any)
+	if len(refuterTools) != 1 || refuterTools["read"] != true {
+		t.Fatalf("review-refuter tools = %#v, want read-only allowlist", refuterTools)
 	}
 }
 
@@ -4799,6 +4891,14 @@ func TestInjectWritesNativeReviewAgentFiles(t *testing.T) {
 					}
 					assertNativeAgentFile(t, filepath.Join(tt.agentsDir(home), agent+ext), want)
 				}
+			}
+			assertNativeAgentFile(t, filepath.Join(tt.agentsDir(home), reviewRefuterAgentName+".md"), "complete merged list of BLOCKER/CRITICAL candidates")
+			for _, ext := range tt.extraExts {
+				want := tt.extraContains[ext]
+				if ext == ".yaml" {
+					want += reviewRefuterAgentName + ".md"
+				}
+				assertNativeAgentFile(t, filepath.Join(tt.agentsDir(home), reviewRefuterAgentName+ext), want)
 			}
 		})
 	}

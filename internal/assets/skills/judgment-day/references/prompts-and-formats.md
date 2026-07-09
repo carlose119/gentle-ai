@@ -50,12 +50,13 @@ Honor the artifact store:
 Findings only. No praise. Return your findings as the ledger rows defined above.
 
 Each finding:
-- Severity: CRITICAL | WARNING (real) | WARNING (theoretical) | SUGGESTION
+- Severity: BLOCKER | CRITICAL | WARNING | SUGGESTION
+- Assessment (optional for WARNING only): real | theoretical
 - File: path/to/file.ext (line N if applicable)
 - Description: what is wrong and why it matters
 - Suggested fix: one-line intent
 
-WARNING rule: normal intended use can trigger it → `WARNING (real)`; contrived/malicious/impossible path → `WARNING (theoretical)`.
+WARNING rule: canonical severity is always `WARNING` and canonical status is always `info`. If normal intended use can trigger it, optionally record `assessment: real`; otherwise record `assessment: theoretical`. Assessment never changes severity or status, and a WARNING is never `open`.
 
 If clean: `VERDICT: CLEAN — No issues found.`
 
@@ -90,11 +91,11 @@ End with: `Skill Resolution: {paths-injected|fallback-registry|fallback-path|non
 ## Verdict Table
 
 ```markdown
-| Finding | Judge A | Judge B | Severity | Status |
-|---------|---------|---------|----------|--------|
-| Missing null check in auth.go:42 | ✅ | ✅ | CRITICAL | Confirmed |
-| Windows volume root edge case | ❌ | ✅ | WARNING (theoretical) | INFO |
-| Naming mismatch | ✅ | ❌ | SUGGESTION | Suspect |
+| Finding | Judge A | Judge B | Severity | Assessment | Status |
+|---------|---------|---------|----------|------------|--------|
+| Missing null check in auth.go:42 | ✅ | ✅ | CRITICAL | — | Confirmed |
+| Windows volume root edge case | ❌ | ✅ | WARNING | theoretical | info |
+| Naming mismatch | ✅ | ❌ | SUGGESTION | — | info |
 ```
 
 Approved criteria after Round 1: zero confirmed BLOCKERs and zero confirmed CRITICALs surviving adversarial verification. Warnings and suggestions are reported once as INFO and never block.
@@ -126,11 +127,11 @@ The model is controlled by the adapter's native model-switching mechanism (e.g.,
 
 The Judge Prompt template above embeds the sweep budget, the precision gate, the findings ledger schema and emission, and the ledger persistence branches. The Fix Agent Prompt template above embeds the read-ledger, mark-fixed, and no-new-rows rules for the fix role. This section documents the gating that turns findings into actionable fixes and the scoped re-review contract that governs the re-judge round following jd-fix-agent.
 
-**Adversarial verification.** Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. Standard review: one refuter agent attempts to refute each BLOCKER/CRITICAL candidate; if refuted, record the finding with status `refuted` — it never enters the fix loop. Full-4R review: a panel of 3 refuters with distinct lenses (correctness, exploitability/impact, reproducibility) attempts the refutation; a finding is killed only if at least 2 of 3 refuters refute it — ties favor keeping the finding.
+**Adversarial verification.** Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. Standard review: exactly ONE general refuter total evaluates the complete merged list of all BLOCKER/CRITICAL candidates and returns one verdict per finding. Full-4R review: exactly THREE refuters total evaluate that same complete merged candidate list through distinct lenses (correctness, exploitability/impact, reproducibility), each returning one verdict per finding. Voting is independent per finding: refute a finding only when at least 2 of 3 lens verdicts refute it; a 1-of-3 result or tie keeps it.
 
-**Refutation protocol.** The orchestrator invokes refutation after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are refuted. Standard review: delegate one `review-refuter` agent with the `general` lens. Full-4R review: delegate three `review-refuter` agents in parallel, one per distinct lens (correctness, exploitability/impact, reproducibility). A finding is recorded `refuted` only when the single refuter refutes it (standard) or when at least 2 of 3 refuters refute it (panel). In judgment-day, adversarial verification is satisfied by the two-judge convergence itself: a BLOCKER/CRITICAL confirmed by both blind judges has survived adversarial verification; judgment-day does NOT additionally spawn `review-refuter` agents.
+**Refutation protocol.** The orchestrator invokes refutation once after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are included. The task ceiling is review-level and structural: 1 refuter task for a standard review or 3 total for full-4R, whether the list has 2 candidates or 20; NEVER spawn one refuter task per candidate. Where dedicated `review-refuter` agents exist, standard review delegates exactly one task with the `general` lens, while full-4R delegates exactly three tasks, one per lens, in parallel. Every task receives the complete merged candidate list. In standard review, a finding is `refuted` only when the general verdict refutes it; in full-4R, apply the independent 2-of-3 vote per finding. Any malformed or missing per-finding verdict defaults to `stands` for that finding. Judgment Day is the exception: its two-judge convergence satisfies adversarial verification and it spawns no `review-refuter` tasks.
 
-**Severity floor.** Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-reviewed, and never block.
+**Severity floor.** Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-reviewed, and never block. Judgment-day may record real/theoretical as a separate `assessment`, but canonical severity remains `WARNING` and canonical status remains `info`; a WARNING is never `open`.
 
 **Convergence budget.** Maximum 2 fix rounds per review. One fix round = the orchestrator (directly or via a single writer sub-agent) applies fixes for all open verified BLOCKER/CRITICAL findings, then a scoped re-review verifies the fix diff against the ledger; in judgment-day the fix actor is `jd-fix-agent`. Anything still open after round 2 is reported to the user as open — the loop never extends.
 

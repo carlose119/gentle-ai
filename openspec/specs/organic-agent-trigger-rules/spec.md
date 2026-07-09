@@ -294,7 +294,7 @@ A binding with `mode: strong` MUST render as a direct run directive the orchestr
 
 Representative rendered language for `strong`:
 - "run `judgment-day`"
-- "trivial diff → no lens; otherwise run `review-risk`, `review-resilience`, `review-readability`, and `review-reliability` in parallel; otherwise (standard diff) run exactly ONE lens selected by the risk table"
+- "trivial diff → no lens; else if the hot-path or large-diff condition matches, run `review-risk`, `review-resilience`, `review-readability`, and `review-reliability` using the adapter's execution mode (parallel with dedicated agents; sequential inline); else run exactly ONE lens selected by the risk table"
 
 The rendered text MUST NOT contain language implying the workflow is blocked or paused pending the review.
 
@@ -310,6 +310,7 @@ The rendered text MUST NOT contain language implying the workflow is blocked or 
 - GIVEN a binding `{ on: "pre-pr", when: { PathGlobs: ["**/auth/**"], MinDiffLines: 400, Combine: "or" }, run: [all four 4R lenses], mode: "strong" }`
 - WHEN the renderer produces the instructional text
 - THEN the rendered output routes a trivial diff to no lens before the fan-out directive
+- AND it uses one exhaustive trivial / hot-or-large / standard decision with no consecutive `otherwise` branches
 - AND the rendered output states the standard-diff fallback (exactly ONE lens selected by the risk table)
 
 #### Scenario: `strong` phase-triggered binding renders without the trivial-diff exemption
@@ -385,7 +386,7 @@ The bound lens is the default row of the risk table for that event; the rendered
 |---------|------|--------|-------|--------|
 | Pre-PR hot-path 4R | `pre-pr` | `{ PathGlobs: ["**/auth/**", "**/update/**"], MinDiffLines: 400, Combine: "or" }` | `["review-risk", "review-readability", "review-reliability", "review-resilience"]` | `strong` |
 
-The hot-path glob set MUST include at minimum: `**/auth/**`, `**/update/**`. The diff-line threshold MUST be `400` and MUST be implemented as a named constant. The rendered binding MUST state the trivial-diff exemption (a trivial pre-pr diff runs no lens) and the standard-diff fallback: a non-trivial pre-pr diff that matches neither the hot-path globs nor the line threshold runs exactly ONE lens selected by the risk table.
+The hot-path glob set MUST include at minimum: `**/auth/**`, `**/update/**`. The diff-line threshold MUST be `400` and MUST be implemented as a named constant. The rendered binding MUST state one exhaustive decision: a trivial pre-pr diff runs no lens; otherwise a hot-path or large diff runs full 4R; otherwise the standard diff runs exactly ONE lens selected by the risk table. Full 4R runs in parallel only where dedicated agents exist and sequentially inside inline adapters.
 
 #### Scenario: Default pre-pr binding triggers the full 4R under the compound condition
 
@@ -477,7 +478,7 @@ The built-in defaults MUST pass all schema validations. A test MUST assert this 
 - AND a pre-pr event with a diff touching `**/auth/**`
 - WHEN each binding's `when` condition is evaluated
 - THEN the hot-path pre-pr binding activates
-- AND all four 4R agents are run in parallel
+- AND all four 4R agents run in parallel where dedicated agents exist or sequentially inside an inline adapter
 
 #### Scenario: Token-Budget Rationale Is Documented in Code
 

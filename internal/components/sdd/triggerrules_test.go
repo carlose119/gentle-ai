@@ -77,14 +77,21 @@ func TestRenderTriggerRules_TriageTiers(t *testing.T) {
 	if strings.Contains(out, "small mechanical changes") {
 		t.Errorf("RenderTriggerRules() output still carries the subjective 'small mechanical changes' trivial boundary; got:\n%s", out)
 	}
-	// The pre-pr binding must state the single-lens fallback for standard diffs.
-	if !strings.Contains(out, "otherwise (standard diff) run exactly ONE lens") {
+	// The pre-pr binding must state one exhaustive tier decision with a
+	// single-lens fallback for standard diffs.
+	if !strings.Contains(out, "else run exactly ONE lens selected by the risk table") {
 		t.Errorf("RenderTriggerRules() pre-pr binding missing standard-diff single-lens fallback; got:\n%s", out)
 	}
 	// The conditional full-4R binding (pre-pr) is still diff triage, so it must
 	// carry the trivial exemption too (R3-001).
-	if !strings.Contains(out, "trivial diff → no lens; otherwise run `review-risk`") {
+	if !strings.Contains(out, "trivial diff → no lens; else if the diff touches") {
 		t.Errorf("RenderTriggerRules() pre-pr binding missing trivial-diff exemption; got:\n%s", out)
+	}
+	if strings.Contains(out, "; otherwise run `review-risk`") || strings.Contains(out, "; otherwise (standard diff)") {
+		t.Errorf("RenderTriggerRules() pre-pr binding contains ambiguous consecutive otherwise branches; got:\n%s", out)
+	}
+	if !strings.Contains(out, "parallel with dedicated agents; sequential inline") {
+		t.Errorf("RenderTriggerRules() pre-pr binding missing capability-aware execution order; got:\n%s", out)
 	}
 	// The everyday bindings must state the trivial-diff exemption and the 4R prohibition.
 	if !strings.Contains(out, "trivial diff → no lens") {
@@ -173,11 +180,39 @@ func TestRenderTriggerRules_ModeWording(t *testing.T) {
 			},
 		}
 		out := RenderTriggerRules(set)
-		if !strings.Contains(out, "trivial diff → no lens; otherwise run `review-risk`") {
+		if !strings.Contains(out, "trivial diff → no lens; else if the diff touches") {
 			t.Errorf("strong conditional full-4R: expected trivial-diff exemption before the fan-out; got:\n%s", out)
 		}
-		if !strings.Contains(out, "otherwise (standard diff) run exactly ONE lens selected by the risk table") {
+		if !strings.Contains(out, "else run exactly ONE lens selected by the risk table") {
 			t.Errorf("strong conditional full-4R: expected standard-diff single-lens fallback; got:\n%s", out)
+		}
+		if strings.Count(out, "else if") != 1 || strings.Count(out, "; else run") != 1 {
+			t.Errorf("strong conditional full-4R: expected one exhaustive if/else-if/else decision; got:\n%s", out)
+		}
+	})
+
+	t.Run("advisory conditional full-4R preserves its condition", func(t *testing.T) {
+		set := model.TriggerRuleSet{
+			Bindings: []model.TriggerBinding{
+				{
+					On: model.EventPrePR,
+					When: model.TriggerWhen{
+						PathGlobs:    []string{"**/auth/**"},
+						MinDiffLines: 400,
+						Combine:      "or",
+					},
+					Run:  []string{"review-risk", "review-resilience", "review-readability", "review-reliability"},
+					Mode: model.ModeAdvisory,
+				},
+			},
+		}
+		out := RenderTriggerRules(set)
+		conditionalPrefix := "- At **pre-pr**, when the diff touches `**/auth/**` OR when the diff exceeds 400 changed lines:"
+		if !strings.Contains(out, conditionalPrefix) {
+			t.Errorf("advisory conditional full-4R: condition was dropped; got:\n%s", out)
+		}
+		if strings.Contains(out, "- At **pre-pr**: trivial diff → no lens; otherwise run `review-risk`") {
+			t.Errorf("advisory conditional full-4R: unmatched standard diffs are routed unconditionally to full 4R; got:\n%s", out)
 		}
 	})
 

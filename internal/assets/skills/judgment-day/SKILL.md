@@ -16,7 +16,7 @@ Load this skill only when the user explicitly asks for Judgment Day, dual/advers
 - Resolve project skills before launching agents: read skill registry, match skill paths by target files/task, and inject the same `Skills to load before work` block into both judge prompts and fix prompts.
 - Launch **two blind judges in parallel** with identical target and criteria; never review the code yourself.
 - Wait for both judges before synthesis; never accept a partial verdict.
-- Classify warnings as `WARNING (real)` only if normal intended use can trigger them; otherwise downgrade to INFO as `WARNING (theoretical)`.
+- Keep every warning's canonical severity as `WARNING` and canonical status as `info`. If useful, record `assessment: real` when normal intended use can trigger it or `assessment: theoretical` otherwise; never encode that assessment in severity or set a warning to `open`.
 - Ask before fixing Round 1 confirmed issues.
 - After any fix agent runs, immediately re-launch both judges in parallel before commit/push/done/session summary.
 - Terminal states are only `JUDGMENT: APPROVED` or `JUDGMENT: ESCALATED`.
@@ -32,7 +32,7 @@ Load this skill only when the user explicitly asks for Judgment Day, dual/advers
 | Judges find only warnings/suggestions | Report once as INFO; never fix, never re-judge. |
 | One judge finds issue | Suspect; report and triage, do not auto-fix. |
 | Judges contradict | Escalate for manual decision. |
-| Round 2+ has only theoretical warnings/suggestions | Report as INFO; do not re-judge. |
+| Judges report only warnings/suggestions | Report once with status `info`; never fix or re-judge. |
 
 ## Execution Steps
 
@@ -67,11 +67,11 @@ Return `## Judgment Day — {target}` with round number, verdict table, confirme
 
 If the first pass finds nothing, persist an empty ledger record rather than skip persistence.
 
-**Adversarial verification.** Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. Standard review: one refuter agent attempts to refute each BLOCKER/CRITICAL candidate; if refuted, record the finding with status `refuted` — it never enters the fix loop. Full-4R review: a panel of 3 refuters with distinct lenses (correctness, exploitability/impact, reproducibility) attempts the refutation; a finding is killed only if at least 2 of 3 refuters refute it — ties favor keeping the finding.
+**Adversarial verification.** Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. Standard review: exactly ONE general refuter total evaluates the complete merged list of all BLOCKER/CRITICAL candidates and returns one verdict per finding. Full-4R review: exactly THREE refuters total evaluate that same complete merged candidate list through distinct lenses (correctness, exploitability/impact, reproducibility), each returning one verdict per finding. Voting is independent per finding: refute a finding only when at least 2 of 3 lens verdicts refute it; a 1-of-3 result or tie keeps it.
 
-**Refutation protocol.** The orchestrator invokes refutation after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are refuted. Standard review: delegate one `review-refuter` agent with the `general` lens. Full-4R review: delegate three `review-refuter` agents in parallel, one per distinct lens (correctness, exploitability/impact, reproducibility). A finding is recorded `refuted` only when the single refuter refutes it (standard) or when at least 2 of 3 refuters refute it (panel). In judgment-day, adversarial verification is satisfied by the two-judge convergence itself: a BLOCKER/CRITICAL confirmed by both blind judges has survived adversarial verification; judgment-day does NOT additionally spawn `review-refuter` agents.
+**Refutation protocol.** The orchestrator invokes refutation once after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are included. The task ceiling is review-level and structural: 1 refuter task for a standard review or 3 total for full-4R, whether the list has 2 candidates or 20; NEVER spawn one refuter task per candidate. Where dedicated `review-refuter` agents exist, standard review delegates exactly one task with the `general` lens, while full-4R delegates exactly three tasks, one per lens, in parallel. Every task receives the complete merged candidate list. In standard review, a finding is `refuted` only when the general verdict refutes it; in full-4R, apply the independent 2-of-3 vote per finding. Any malformed or missing per-finding verdict defaults to `stands` for that finding. Judgment Day is the exception: its two-judge convergence satisfies adversarial verification and it spawns no `review-refuter` tasks.
 
-**Severity floor.** Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-reviewed, and never block.
+**Severity floor.** Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-reviewed, and never block. Judgment-day may record real/theoretical as a separate `assessment`, but canonical severity remains `WARNING` and canonical status remains `info`; a WARNING is never `open`.
 
 **Convergence budget.** Maximum 2 fix rounds per review. One fix round = the orchestrator (directly or via a single writer sub-agent) applies fixes for all open verified BLOCKER/CRITICAL findings, then a scoped re-review verifies the fix diff against the ledger; in judgment-day the fix actor is `jd-fix-agent`. Anything still open after round 2 is reported to the user as open — the loop never extends.
 

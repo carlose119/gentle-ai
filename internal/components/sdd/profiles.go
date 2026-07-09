@@ -73,6 +73,8 @@ var reviewAgentNames = []string{
 	"review-resilience",
 }
 
+const reviewRefuterAgentName = "review-refuter"
+
 // ProfilePhaseOrder returns the ordered list of SDD sub-agent phase names.
 // Use this instead of duplicating the slice in other packages.
 func ProfilePhaseOrder() []string {
@@ -305,6 +307,7 @@ func GenerateProfileOverlay(profile model.Profile, homeDir string, codeGraphGuid
 	for _, reviewAgent := range reviewAgentNames {
 		taskPerms[reviewAgent] = "allow"
 	}
+	taskPerms[reviewRefuterAgentName] = "allow"
 
 	orchEntry := map[string]any{
 		"mode":        "primary",

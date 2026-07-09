@@ -59,20 +59,23 @@ var judgeFacingLedgerClauses = []string{
 // review, not the judge's own prompt, so they are excluded from the Judge
 // Prompt fence but required in every adopting asset.
 var gatingLedgerClauses = []string{
-	// Adversarial verification: only BLOCKER/CRITICAL candidates are verified.
+	// Adversarial verification: only BLOCKER/CRITICAL candidates are verified,
+	// with fixed review-level batching rather than per-candidate fan-out.
 	"Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes",
-	"if refuted, record the finding with status `refuted` — it never enters the fix loop",
-	"a panel of 3 refuters with distinct lenses (correctness, exploitability/impact, reproducibility)",
-	"killed only if at least 2 of 3 refuters refute it — ties favor keeping the finding",
+	"Standard review: exactly ONE general refuter total evaluates the complete merged list of all BLOCKER/CRITICAL candidates and returns one verdict per finding",
+	"Full-4R review: exactly THREE refuters total evaluate that same complete merged candidate list through distinct lenses (correctness, exploitability/impact, reproducibility), each returning one verdict per finding",
+	"Voting is independent per finding: refute a finding only when at least 2 of 3 lens verdicts refute it; a 1-of-3 result or tie keeps it",
 	// Refutation protocol: WHO refutes, WHEN, and with WHAT delegation shape
 	// (R2-001/R3-002). The refuter role itself lives in review-refuter.md.
-	"The orchestrator invokes refutation after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are refuted",
-	"Standard review: delegate one `review-refuter` agent with the `general` lens",
-	"Full-4R review: delegate three `review-refuter` agents in parallel, one per distinct lens (correctness, exploitability/impact, reproducibility)",
-	"recorded `refuted` only when the single refuter refutes it (standard) or when at least 2 of 3 refuters refute it (panel)",
+	"The orchestrator invokes refutation once after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are included",
+	"The task ceiling is review-level and structural: 1 refuter task for a standard review or 3 total for full-4R, whether the list has 2 candidates or 20; NEVER spawn one refuter task per candidate",
+	"Every task receives the complete merged candidate list",
+	"Any malformed or missing per-finding verdict defaults to `stands` for that finding",
+	"Judgment Day is the exception: its two-judge convergence satisfies adversarial verification and it spawns no `review-refuter` tasks",
 	// Severity floor for the fix loop.
 	"Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop",
 	"reported once with status `info`, are never re-reviewed, and never block",
+	"canonical severity remains `WARNING` and canonical status remains `info`; a WARNING is never `open`",
 	// Convergence budget: bounded fix rounds, with the round and the fix actor
 	// defined (R2-002).
 	"Maximum 2 fix rounds per review",
@@ -112,14 +115,14 @@ func concatClauses(groups ...[]string) []string {
 // subagent-mode review-* lens asset must carry (design ADR 5).
 const requiredSubagentReviewModeClause = "This is a subagent-mode review lens: emit your own ledger rows above; the orchestrator merges them into the persisted ledger."
 
-// requiredOrchestratorMergeModeClause is the execution-mode sentence the four
-// subagent-family orchestrators (Claude, Cursor, Kimi, Kiro) must carry: even
-// though the lenses run as subagents, the orchestrator still owns merge/persist.
-const requiredOrchestratorMergeModeClause = "Subagent mode (Claude, Cursor, Kimi, Kiro): each review-*/jd-* subagent runs its own sweep-budgeted pass and returns its own ledger rows; merge those subagent ledger rows into the persisted ledger and persist per the branch above."
+// requiredOrchestratorMergeModeClause is the execution-mode sentence the
+// dedicated-agent orchestrators must carry: even though the lenses and
+// refuters run as subagents, the orchestrator still owns merge/persist/voting.
+const requiredOrchestratorMergeModeClause = "Dedicated-agent mode (Claude, Cursor, Kimi, Kiro, OpenCode/Kilocode): each review-* agent runs its own sweep-budgeted pass and returns its own ledger rows; merge those rows into the persisted ledger. Refutation uses the fixed review-level fan-out above: exactly 1 batched task for standard review or exactly 3 batched tasks for full-4R; only the 3 full-4R tasks may run in parallel."
 
 // requiredOrchestratorInlineModeClause is the execution-mode sentence every
 // inline-mode orchestrator (no dedicated review-*/jd-* subagents) must carry.
-const requiredOrchestratorInlineModeClause = "Inline mode (this adapter has no dedicated review-*/jd-* subagents): run each lens sequentially inside your own orchestrator context and maintain the merged ledger directly."
+const requiredOrchestratorInlineModeClause = "Inline mode (this adapter has no dedicated review-*/jd-* or `review-refuter` subagents): run each review lens sequentially inside your own orchestrator context and maintain the merged ledger directly. This clause overrides the generic delegation wording above: do not spawn refuter tasks; after merging candidates, run one general refutation pass for standard review or three lens passes sequentially for full-4R, each over the complete candidate list, then apply verdicts per finding with the same malformed/missing = `stands` and 2-of-3 rules."
 
 // requiredJDSubagentModeClause is the execution-mode sentence every jd-judge-*.md
 // subagent asset (Claude, Kiro) must carry. jd-fix-agent.md files do NOT carry
@@ -219,7 +222,7 @@ var reviewLedgerFixAgentAssets = []string{
 // adapter families that ship dedicated review-* agent assets. Like
 // jd-fix-agent.md, the refuter carries its own role-specific clause set
 // (requiredRefuterClauses) instead of the judge-oriented
-// requiredLedgerClauses — it verifies exactly one finding and never reviews
+// requiredLedgerClauses — it verifies a complete candidate list and never reviews
 // a diff or emits a findings ledger (R2-001/R3-002).
 var reviewLedgerRefuterAssets = []string{
 	"claude/agents/review-refuter.md",
@@ -229,18 +232,21 @@ var reviewLedgerRefuterAssets = []string{
 }
 
 // requiredRefuterClauses are the refuter-specific clauses every
-// review-refuter.md asset must carry: the single-finding input contract, the
+// review-refuter.md asset must carry: the batched candidate-list input contract, the
 // four refutation lenses, the concrete-counter-evidence bar, the
 // ties-favor-the-finding default, the read-only rule, and the verdict output
 // contract (R2-001/R3-002).
 var requiredRefuterClauses = []string{
 	"`general` (standard single-refuter mode)",
+	"complete merged list of BLOCKER/CRITICAL candidates",
 	"`correctness`: is the claimed defect actually wrong behavior?",
 	"`exploitability-impact`: can a real user or attacker ever hit it, and does it matter?",
 	"`reproducibility`: can the failure scenario be concretely reproduced from the cited code?",
 	"A refutation requires concrete counter-evidence",
 	"\"Seems unlikely\" does not refute",
 	"Default to `stands` when evidence is inconclusive: ties favor the finding",
+	"Return one verdict for every candidate",
+	"Do not omit candidates",
 	"Never edit files",
 	"Do not report new findings",
 	"`verdict: refuted` or `verdict: stands`",
@@ -315,12 +321,13 @@ var reviewLedgerOrchestratorAssets = map[string]string{
 }
 
 // subagentFamilyOrchestrators are the orchestrators that also need the
-// merge-side clause because their lenses run as subagents.
+// merge-side clause because their review/refuter roles run as subagents.
 var subagentFamilyOrchestrators = map[string]bool{
-	"claude": true,
-	"cursor": true,
-	"kimi":   true,
-	"kiro":   true,
+	"claude":   true,
+	"cursor":   true,
+	"kimi":     true,
+	"kiro":     true,
+	"opencode": true,
 }
 
 // reviewLedgerJudgmentDaySkillAssets enumerates the 2 judgment-day skill docs
@@ -413,7 +420,8 @@ func TestRequiredLedgerClauses(t *testing.T) {
 			settingsPath := tc.adapter.SettingsPath(home)
 			prompt := readGentleOrchestratorPrompt(t, settingsPath)
 			assertTextContainsClauses(t, tc.name+" gentle-orchestrator prompt", prompt, requiredLedgerClauses)
-			assertTextContainsClauses(t, tc.name+" gentle-orchestrator prompt", prompt, []string{requiredOrchestratorInlineModeClause})
+			assertTextContainsClauses(t, tc.name+" gentle-orchestrator prompt", prompt, []string{requiredOrchestratorMergeModeClause})
+			assertRenderedReviewRefuter(t, settingsPath)
 		})
 	}
 
@@ -445,6 +453,98 @@ func TestRequiredLedgerClauses(t *testing.T) {
 	})
 }
 
+func TestReviewRefutersAreStructurallyReadOnly(t *testing.T) {
+	t.Run("claude", func(t *testing.T) {
+		frontmatter := markdownFrontmatter(t, "claude/agents/review-refuter.md")
+		if !strings.Contains(frontmatter, "tools: Read, Grep, Glob") {
+			t.Fatalf("Claude refuter tools must be the read-only allowlist; got:\n%s", frontmatter)
+		}
+		assertNoCommandOrWriteTools(t, "Claude refuter", frontmatter)
+	})
+
+	t.Run("kiro", func(t *testing.T) {
+		frontmatter := markdownFrontmatter(t, "kiro/agents/review-refuter.md")
+		if !strings.Contains(frontmatter, `tools: ["read"]`) {
+			t.Fatalf("Kiro refuter tools must contain only read; got:\n%s", frontmatter)
+		}
+		assertNoCommandOrWriteTools(t, "Kiro refuter", frontmatter)
+	})
+
+	t.Run("cursor", func(t *testing.T) {
+		frontmatter := markdownFrontmatter(t, "cursor/agents/review-refuter.md")
+		if !strings.Contains(frontmatter, "readonly: true") {
+			t.Fatalf("Cursor refuter must set readonly: true; got:\n%s", frontmatter)
+		}
+		assertNoCommandOrWriteTools(t, "Cursor refuter", frontmatter)
+	})
+
+	t.Run("kimi", func(t *testing.T) {
+		const path = "kimi/agents/review-refuter.yaml"
+		content := assets.MustRead(path)
+		for _, excluded := range []string{
+			"kimi_cli.tools.multiagent:Task",
+			"kimi_cli.tools.shell:Shell",
+			"kimi_cli.tools.file:WriteFile",
+			"kimi_cli.tools.file:StrReplaceFile",
+		} {
+			if !strings.Contains(content, excluded) {
+				t.Errorf("%s must exclude %q", path, excluded)
+			}
+		}
+		if strings.Contains(content, "\n  tools:") {
+			t.Fatalf("%s must not add a positive tool allowlist that can restore command/write tools", path)
+		}
+	})
+
+	for _, path := range []string{"opencode/sdd-overlay-single.json", "opencode/sdd-overlay-multi.json"} {
+		t.Run(path, func(t *testing.T) {
+			var root map[string]any
+			if err := json.Unmarshal([]byte(assets.MustRead(path)), &root); err != nil {
+				t.Fatalf("Unmarshal(%s) error = %v", path, err)
+			}
+			agentMap := root["agent"].(map[string]any)
+			refuter, ok := agentMap["review-refuter"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s missing review-refuter definition", path)
+			}
+			tools, ok := refuter["tools"].(map[string]any)
+			if !ok || len(tools) != 1 || tools["read"] != true {
+				t.Fatalf("%s review-refuter tools = %#v, want read-only allowlist", path, tools)
+			}
+			prompt, _ := refuter["prompt"].(string)
+			for _, clause := range []string{
+				"complete merged list of BLOCKER/CRITICAL candidates",
+				"one verdict entry per candidate",
+				"malformed or missing per-finding verdict as stands",
+			} {
+				if !strings.Contains(prompt, clause) {
+					t.Errorf("%s review-refuter prompt missing %q", path, clause)
+				}
+			}
+		})
+	}
+}
+
+func markdownFrontmatter(t *testing.T, path string) string {
+	t.Helper()
+	content := assets.MustRead(path)
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) != 3 {
+		t.Fatalf("%s missing YAML frontmatter", path)
+	}
+	return parts[1]
+}
+
+func assertNoCommandOrWriteTools(t *testing.T, label, frontmatter string) {
+	t.Helper()
+	lower := strings.ToLower(frontmatter)
+	for _, forbidden := range []string{"bash", "shell", "command", "write", "edit"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("%s frontmatter grants forbidden command/write tool %q:\n%s", label, forbidden, frontmatter)
+		}
+	}
+}
+
 // readGentleOrchestratorPrompt reads back the rendered gentle-orchestrator
 // agent prompt from an OpenCode/Kilocode opencode.json settings file.
 func readGentleOrchestratorPrompt(t *testing.T, settingsPath string) string {
@@ -470,6 +570,36 @@ func readGentleOrchestratorPrompt(t *testing.T, settingsPath string) string {
 		t.Fatalf("%q: \"agent.gentle-orchestrator.prompt\" is not a string", settingsPath)
 	}
 	return prompt
+}
+
+func assertRenderedReviewRefuter(t *testing.T, settingsPath string) {
+	t.Helper()
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", settingsPath, err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatalf("Unmarshal(%q) error = %v", settingsPath, err)
+	}
+	agentMap := root["agent"].(map[string]any)
+	refuter, ok := agentMap[reviewRefuterAgentName].(map[string]any)
+	if !ok {
+		t.Fatalf("%q missing rendered %s agent", settingsPath, reviewRefuterAgentName)
+	}
+	tools, ok := refuter["tools"].(map[string]any)
+	if !ok || len(tools) != 1 || tools["read"] != true {
+		t.Fatalf("%q rendered %s tools = %#v, want read-only allowlist", settingsPath, reviewRefuterAgentName, tools)
+	}
+	orchestrator := agentMap["gentle-orchestrator"].(map[string]any)
+	permission := orchestrator["permission"].(map[string]any)
+	task := permission["task"].(map[string]any)
+	if replacement, ok := task["__replace__"].(map[string]any); ok {
+		task = replacement
+	}
+	if task[reviewRefuterAgentName] != "allow" {
+		t.Fatalf("%q gentle-orchestrator cannot invoke %s: %#v", settingsPath, reviewRefuterAgentName, task)
+	}
 }
 
 // TestReviewLedgerContractSchema is the golden-string assertion test (task

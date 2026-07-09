@@ -26,7 +26,7 @@ import (
 //     signal. The compound `PathGlobs + MinDiffLines (Combine: "or")`
 //     condition expresses this tier.
 //   - High-stakes SDD: post-sdd-phase on design/apply runs judgment-day
-//     (~4 + 3*findings cost). Reserved for high-stakes SDD phases only.
+//     (two blind judges; no refuter fan-out). Reserved for high-stakes SDD phases only.
 const defaultLargeChangedLineThreshold = 400
 
 // on-ci and on-schedule have no built-in default because the appropriate
@@ -77,7 +77,7 @@ var defaultRuleSet = model.TriggerRuleSet{
 			},
 			Run:  []string{"judgment-day"},
 			Mode: model.ModeStrong,
-			Reason: "adversarial verification (~4 + 3*findings cost) only at " +
+			Reason: "adversarial verification (two blind judges; no refuter fan-out) only at " +
 				"high-stakes SDD phases (design and apply)",
 		},
 	},
@@ -278,10 +278,10 @@ func ValidateTriggerRuleSet(set model.TriggerRuleSet) error {
 // has4RFanOut reports whether run contains all four 4R review agents.
 func has4RFanOut(run []string) bool {
 	const (
-		agentRisk         = "review-risk"
-		agentReadability  = "review-readability"
-		agentReliability  = "review-reliability"
-		agentResilience   = "review-resilience"
+		agentRisk        = "review-risk"
+		agentReadability = "review-readability"
+		agentReliability = "review-reliability"
+		agentResilience  = "review-resilience"
 	)
 	found := 0
 	for _, r := range run {

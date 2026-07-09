@@ -40,11 +40,11 @@ retained from v1.
 
 If the first pass finds nothing, persist an empty ledger record rather than skip persistence.
 
-**Adversarial verification.** Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. Standard review: one refuter agent attempts to refute each BLOCKER/CRITICAL candidate; if refuted, record the finding with status `refuted` — it never enters the fix loop. Full-4R review: a panel of 3 refuters with distinct lenses (correctness, exploitability/impact, reproducibility) attempts the refutation; a finding is killed only if at least 2 of 3 refuters refute it — ties favor keeping the finding.
+**Adversarial verification.** Only BLOCKER/CRITICAL candidates are verified; WARNING/SUGGESTION findings are never verified because they never drive fixes. Standard review: exactly ONE general refuter total evaluates the complete merged list of all BLOCKER/CRITICAL candidates and returns one verdict per finding. Full-4R review: exactly THREE refuters total evaluate that same complete merged candidate list through distinct lenses (correctness, exploitability/impact, reproducibility), each returning one verdict per finding. Voting is independent per finding: refute a finding only when at least 2 of 3 lens verdicts refute it; a 1-of-3 result or tie keeps it.
 
-**Refutation protocol.** The orchestrator invokes refutation after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are refuted. Standard review: delegate one `review-refuter` agent with the `general` lens. Full-4R review: delegate three `review-refuter` agents in parallel, one per distinct lens (correctness, exploitability/impact, reproducibility). A finding is recorded `refuted` only when the single refuter refutes it (standard) or when at least 2 of 3 refuters refute it (panel).
+**Refutation protocol.** The orchestrator invokes refutation once after merging lens ledgers and before any fix work; only BLOCKER/CRITICAL candidates are included. The task ceiling is review-level and structural: 1 refuter task for a standard review or 3 total for full-4R, whether the list has 2 candidates or 20; NEVER spawn one refuter task per candidate. Where dedicated `review-refuter` agents exist, standard review delegates exactly one task with the `general` lens, while full-4R delegates exactly three tasks, one per lens, in parallel. Every task receives the complete merged candidate list. In standard review, a finding is `refuted` only when the general verdict refutes it; in full-4R, apply the independent 2-of-3 vote per finding. Any malformed or missing per-finding verdict defaults to `stands` for that finding. Judgment Day is the exception: its two-judge convergence satisfies adversarial verification and it spawns no `review-refuter` tasks.
 
-**Severity floor.** Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-reviewed, and never block.
+**Severity floor.** Only BLOCKER/CRITICAL findings that survive adversarial verification enter the fix → re-review loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-reviewed, and never block. Judgment-day may record real/theoretical as a separate `assessment`, but canonical severity remains `WARNING` and canonical status remains `info`; a WARNING is never `open`.
 
 **Convergence budget.** Maximum 2 fix rounds per review. One fix round = the orchestrator (directly or via a single writer sub-agent) applies fixes for all open verified BLOCKER/CRITICAL findings, then a scoped re-review verifies the fix diff against the ledger; in judgment-day the fix actor is `jd-fix-agent`. Anything still open after round 2 is reported to the user as open — the loop never extends.
 
@@ -75,10 +75,9 @@ terminal — it never enters the fix loop. Actionable findings then move `open`
 resolved). `wont-fix` = accepted/deferred with reason. `info` = a
 WARNING/SUGGESTION finding (reported once, never verified, never re-reviewed,
 never blocking) or a new finding on an untouched line (first-pass quality
-signal, NOT a re-round trigger); it also covers judgment-day's `WARNING
-(theoretical)` items — JD's real/theoretical distinction collapses onto
-`severity=WARNING` plus `status` (`open` vs `info`), so JD and the 4R lenses
-write the same table.
+signal, NOT a re-round trigger). Judgment-day may preserve real/theoretical as
+a separate `assessment`, but every warning keeps canonical `severity=WARNING`
+and `status=info`; warnings are never `open`.
 
 **Refuter lenses.** In the full-4R panel, `correctness` asks "is the claimed
 defect actually wrong behavior?", `exploitability/impact` asks "can a real
@@ -89,25 +88,27 @@ attacks the finding from any angle. A refuter must present concrete
 counter-evidence; "seems unlikely" does not refute.
 
 **Refuter role and delegation.** The refuter role is the `review-refuter`
-agent asset (`internal/assets/{claude,cursor,kimi,kiro}/agents/review-refuter.md`;
-inline-mode adapters run the same role via generic delegate). It is read-only,
-receives exactly ONE finding (`id`, `location`, `severity`, `summary`,
-`evidence`) plus one refutation lens, and returns `verdict: refuted` or
-`verdict: stands` with evidence; it defaults to `stands` when evidence is
-inconclusive and never edits files. Delegation shape:
+agent asset (`internal/assets/{claude,cursor,kimi,kiro}/agents/review-refuter.md`
+plus the OpenCode/Kilocode overlay definition). It is structurally read-only,
+receives the complete merged candidate list (`id`, `location`, `severity`,
+`summary`, `evidence` per entry) plus one refutation lens, and returns one
+`refuted` or `stands` verdict with evidence per finding. Inconclusive,
+malformed, or missing per-finding results default to `stands`. Delegation
+shape:
 
 ```
-Standard review (one refuter, general lens):
-  delegate(agent="review-refuter", prompt="Finding: {id, location, severity, summary, evidence}. Refutation lens: general. Attempt to refute this finding with concrete evidence from the code; return verdict `refuted` or `stands` plus evidence.")
+Standard review (exactly one batched refuter total, general lens):
+  delegate(agent="review-refuter", prompt="Candidates: [{id, location, severity, summary, evidence}, ...]. Refutation lens: general. Return one `refuted` or `stands` verdict plus evidence for every candidate.")
 
-Full-4R review (panel of 3, one per lens, in parallel):
-  delegate(agent="review-refuter", prompt="Finding: {…}. Refutation lens: correctness. …")
-  delegate(agent="review-refuter", prompt="Finding: {…}. Refutation lens: exploitability-impact. …")
-  delegate(agent="review-refuter", prompt="Finding: {…}. Refutation lens: reproducibility. …")
+Full-4R review (exactly three batched refuters total, one per lens, in parallel where dedicated agents exist):
+  delegate(agent="review-refuter", prompt="Candidates: [{…}, ...]. Refutation lens: correctness. Return one verdict per candidate. …")
+  delegate(agent="review-refuter", prompt="Candidates: [{…}, ...]. Refutation lens: exploitability-impact. Return one verdict per candidate. …")
+  delegate(agent="review-refuter", prompt="Candidates: [{…}, ...]. Refutation lens: reproducibility. Return one verdict per candidate. …")
 ```
 
-Adapters without named sub-agents use their generic delegate syntax with the
-same prompt shape.
+Never create one task per candidate. Adapters without dedicated refuter
+subagents do not use generic delegation for this step; they run the equivalent
+one general pass or three sequential lens passes inline over the complete list.
 
 **Judgment-day reconciliation.** In judgment-day, adversarial verification is
 satisfied by the two-judge convergence itself: a BLOCKER/CRITICAL confirmed by
@@ -122,14 +123,14 @@ fix-touched lines, within the same convergence budget.
 
 The contract above is stated once; only ledger ownership differs by mode:
 
-- **Subagent mode** (Claude, Cursor, Kimi, Kiro): each review-* / jd-* agent
-  runs its lens within the sweep budget and returns its own ledger rows in
-  its Output contract; the orchestrator merges those subagent ledger rows
-  into the persisted ledger and persists per the branch above.
-- **Inline mode** (Codex, Gemini, Qwen, OpenCode/Kilocode, Windsurf,
-  Antigravity, Hermes, generic, and any adapter without dedicated review-*/
-  jd-* subagents): the orchestrator runs each lens sequentially in its own
-  context and maintains the merged ledger directly.
+- **Dedicated-agent mode** (Claude, Cursor, Kimi, Kiro, OpenCode/Kilocode):
+  each review-* agent runs its lens within the sweep budget and returns its own
+  ledger rows; the orchestrator merges those rows, then uses exactly 1 batched
+  refuter task for standard review or exactly 3 for full-4R.
+- **Inline mode** (Codex, Gemini, Qwen, Windsurf, Antigravity, Hermes,
+  generic, and any adapter without dedicated review/refuter subagents): the
+  orchestrator runs review lenses sequentially and performs the equivalent
+  one general or three sequential lens refutation passes itself.
 
 ## Interfaces / Contracts
 
@@ -163,9 +164,9 @@ both: judge clauses in the Judge Prompt template, fix clauses in the Fix
 Agent Prompt template.
 
 Exception: `internal/assets/{claude,cursor,kimi,kiro}/agents/review-refuter.md`
-is likewise NOT a hand-copy target. The refuter verifies exactly one finding
-and never reviews a diff or emits a findings ledger, so it carries its own
-role clause set enforced by `requiredRefuterClauses` in the test below.
+is likewise NOT a hand-copy target. The refuter verifies a complete candidate
+list and never reviews a diff or emits a findings ledger, so it carries its
+own role clause set enforced by `requiredRefuterClauses` in the test below.
 
 Each surface also states its own execution-mode sentence per the "Execution
 modes" section above. `internal/components/sdd/review_ledger_contract_test.go`

@@ -32,10 +32,11 @@ one tier before acting:
 - At **pre-commit**, always: trivial diff → no lens; otherwise run exactly ONE
   lens selected by the risk table (default `review-readability`); never the
   full 4R fan-out here.
-- At **pre-pr**, when the diff touches auth/update/security/payments paths OR
-  exceeds 400 changed lines: trivial diff → no lens; otherwise run all four 4R
-  lenses in parallel; otherwise (standard diff) run exactly ONE lens selected
-  by the risk table.
+- At **pre-pr**: trivial diff → no lens; else if the diff touches
+  auth/update/security/payments paths OR exceeds 400 changed lines, run all
+  four 4R lenses using the adapter's execution mode (parallel with dedicated
+  agents; sequential inline); else run exactly ONE lens selected by the risk
+  table.
 - ...
 <!-- /gentle-ai:trigger-rules -->
 ```
@@ -73,13 +74,13 @@ The orchestrator triages every diff into exactly one tier before acting:
 
 **Tier 3 — Hot path or large diff → full 4R fan-out (pre-pr only)**
 
-- `pre-pr` on `**/auth/**`, `**/update/**`, `**/security/**`, or `**/payments/**` paths, OR when the diff exceeds 400 changed lines: run all four 4R review lenses (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) in parallel.
+- `pre-pr` on `**/auth/**`, `**/update/**`, `**/security/**`, or `**/payments/**` paths, OR when the diff exceeds 400 changed lines: run all four 4R review lenses (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) using the adapter's execution mode — parallel when dedicated agents exist, sequential inside inline adapters.
   Cost: ~4x. Reserved for high-blast-radius changes; the fan-out never fires at `pre-commit` or `pre-push` (this prohibition is enforced by rule-set validation).
 
 **High-stakes SDD phases**
 
 - `post-sdd-phase` after the `design` or `apply` phase: run `judgment-day` adversarial verification.
-  Cost: ~4 + 3×findings. Reserved for the SDD phases most likely to introduce architectural debt.
+  Cost: two blind judges per judgment round, with no refuter fan-out. Reserved for the SDD phases most likely to introduce architectural debt.
 
 **No built-in binding for `on-ci` and `on-schedule`** — the appropriate agent and cadence for CI and scheduled runs are installation-specific. Both events are part of the supported event vocabulary and can be used in a future override mechanism.
 

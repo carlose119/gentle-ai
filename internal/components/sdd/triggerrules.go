@@ -39,6 +39,9 @@ func RenderTriggerRules(set model.TriggerRuleSet) string {
 		directive := renderDirective(b)
 
 		line := fmt.Sprintf("- At **%s**, %s: %s.", b.On, whenPhrase, directive)
+		if b.Mode != model.ModeAdvisory && isFull4R(b.Run) && !b.When.Always {
+			line = fmt.Sprintf("- At **%s**: %s.", b.On, directive)
+		}
 		if b.Reason != "" {
 			line += fmt.Sprintf(" (%s)", b.Reason)
 		}
@@ -78,7 +81,10 @@ func renderDirective(b model.TriggerBinding) string {
 
 	// ModeStrong (and any unrecognized mode) renders as a direct directive.
 	if isFull4R(b.Run) && !b.When.Always {
-		return fmt.Sprintf("trivial diff → no lens; otherwise run %s; otherwise (standard diff) run exactly ONE lens selected by the risk table", agents)
+		condition := strings.TrimPrefix(renderWhen(b.When), "when ")
+		condition = strings.ReplaceAll(condition, " OR when ", " OR ")
+		condition = strings.ReplaceAll(condition, " AND when ", " AND ")
+		return fmt.Sprintf("trivial diff → no lens; else if %s, run %s using the adapter's execution mode (parallel with dedicated agents; sequential inline); else run exactly ONE lens selected by the risk table", condition, renderAgentList(b.Run))
 	}
 	return fmt.Sprintf("run %s", agents)
 }
@@ -142,6 +148,14 @@ func renderWhen(w model.TriggerWhen) string {
 
 // renderAgents formats the list of agent names for a binding.
 func renderAgents(run []string) string {
+	agents := renderAgentList(run)
+	if len(run) > 1 {
+		return agents + " in parallel"
+	}
+	return agents
+}
+
+func renderAgentList(run []string) string {
 	if len(run) == 0 {
 		return "(no agents)"
 	}
@@ -154,7 +168,7 @@ func renderAgents(run []string) string {
 	}
 	last := quoted[len(quoted)-1]
 	rest := quoted[:len(quoted)-1]
-	return strings.Join(rest, ", ") + ", and " + last + " in parallel"
+	return strings.Join(rest, ", ") + ", and " + last
 }
 
 // joinPhases joins phase names with "or" for the when-phrase.
