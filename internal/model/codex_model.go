@@ -142,6 +142,24 @@ func CodexCarrilModelsForPreset(preset string) map[string]string {
 	return out
 }
 
+// MigrateLegacyCodexCarrilDefaults replaces the exact historical implicit
+// default tuple with the current Recommended models. Every other persisted map
+// is custom and is returned unchanged as a defensive copy.
+func MigrateLegacyCodexCarrilDefaults(assignments map[string]string) map[string]string {
+	if len(assignments) == 3 &&
+		assignments["sdd-strong"] == "gpt-5.5" &&
+		assignments["sdd-mid"] == "gpt-5.5" &&
+		assignments["sdd-cheap"] == "gpt-5.4-mini" {
+		return CodexCarrilModelsForPreset(string(CodexPresetRecommended))
+	}
+
+	out := make(map[string]string, len(assignments))
+	for carril, modelID := range assignments {
+		out[carril] = modelID
+	}
+	return out
+}
+
 func codexPresetEfforts(preset string) map[string]CodexEffort {
 	defaults := CodexPresetCarrilDefaults(preset)
 	out := make(map[string]CodexEffort, 13)

@@ -1495,29 +1495,82 @@ func TestApplyOverrides_CodexCarrilModelAssignments(t *testing.T) {
 	}
 }
 
-// TestLoadPersistedAssignments_CodexCarrilModels verifies that state with
-// codexCarrilModelAssignments populates selection.CodexCarrilModelAssignments.
 func TestLoadPersistedAssignments_CodexCarrilModels(t *testing.T) {
+	tests := []struct {
+		name      string
+		persisted map[string]string
+		want      map[string]string
+	}{
+		{name: "migrates exact legacy defaults", persisted: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini"}, want: model.DefaultCarrilModels()},
+		{name: "preserves custom tuple", persisted: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.4", "sdd-cheap": "gpt-5.4-mini"}, want: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.4", "sdd-cheap": "gpt-5.4-mini"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := state.Write(home, state.InstallState{InstalledAgents: []string{"codex"}, CodexCarrilModelAssignments: tt.persisted}); err != nil {
+				t.Fatalf("state.Write: %v", err)
+			}
+
+			sel := model.Selection{}
+			loadPersistedAssignments(home, &sel)
+			if !reflect.DeepEqual(sel.CodexCarrilModelAssignments, tt.want) {
+				t.Fatalf("CodexCarrilModelAssignments = %#v, want %#v", sel.CodexCarrilModelAssignments, tt.want)
+			}
+		})
+	}
+}
+
+func TestTuiSyncMigratesLegacyCodexCarrilDefaults(t *testing.T) {
+	t.Cleanup(codex.SetRuntimeVersionCommandForTest("codex-cli 0.144.0", nil))
 	home := t.TempDir()
 	if err := state.Write(home, state.InstallState{
-		InstalledAgents: []string{"codex"},
-		CodexCarrilModelAssignments: map[string]string{
-			"sdd-strong": "gpt-5.5",
-			"sdd-mid":    "gpt-5.5",
-			"sdd-cheap":  "gpt-5.4-mini",
-		},
+		InstalledAgents:             []string{"codex"},
+		CodexCarrilModelAssignments: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini"},
+		CodexModelAssignments:       map[string]string{"sdd-apply": "medium"},
 	}); err != nil {
 		t.Fatalf("state.Write: %v", err)
 	}
 
-	sel := model.Selection{}
-	loadPersistedAssignments(home, &sel)
-
-	if sel.CodexCarrilModelAssignments["sdd-cheap"] != "gpt-5.4-mini" {
-		t.Errorf("CodexCarrilModelAssignments[sdd-cheap] = %q, want gpt-5.4-mini", sel.CodexCarrilModelAssignments["sdd-cheap"])
+	changed, err := tuiSync(home)(nil)
+	if err != nil {
+		t.Fatalf("tuiSync() error = %v", err)
 	}
-	if sel.CodexCarrilModelAssignments["sdd-strong"] != "gpt-5.5" {
-		t.Errorf("CodexCarrilModelAssignments[sdd-strong] = %q, want gpt-5.5", sel.CodexCarrilModelAssignments["sdd-strong"])
+	changedSet := make(map[string]bool, len(changed))
+	for _, path := range changed {
+		changedSet[path] = true
+	}
+
+	wantProfiles := map[string][]string{
+		"sdd-strong.config.toml": {`model = "gpt-5.6-sol"`, `model_reasoning_effort = "medium"`},
+		"sdd-mid.config.toml":    {`model = "gpt-5.6-terra"`, `model_reasoning_effort = "medium"`},
+		"sdd-cheap.config.toml":  {`model = "gpt-5.6-luna"`, `model_reasoning_effort = "low"`},
+	}
+	for name, wantContent := range wantProfiles {
+		path := filepath.Join(home, ".codex", name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", path, err)
+		}
+		for _, want := range wantContent {
+			if !strings.Contains(string(body), want) {
+				t.Fatalf("%s missing %q; got:\n%s", name, want, body)
+			}
+		}
+		if !changedSet[path] {
+			t.Errorf("tuiSync changed files missing %s: %#v", path, changed)
+		}
+	}
+
+	persisted, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read after tuiSync: %v", err)
+	}
+	if !reflect.DeepEqual(persisted.CodexCarrilModelAssignments, model.DefaultCarrilModels()) {
+		t.Fatalf("persisted carril assignments = %#v, want %#v", persisted.CodexCarrilModelAssignments, model.DefaultCarrilModels())
+	}
+	if persisted.CodexModelAssignments["sdd-apply"] != "medium" {
+		t.Fatalf("persisted effort assignment = %#v, want sdd-apply medium", persisted.CodexModelAssignments)
 	}
 }
 

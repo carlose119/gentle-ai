@@ -748,11 +748,7 @@ func loadPersistedAssignments(homeDir string, selection *model.Selection) {
 		selection.CodexModelAssignments = m
 	}
 	if len(selection.CodexCarrilModelAssignments) == 0 && len(s.CodexCarrilModelAssignments) > 0 {
-		m := make(map[string]string, len(s.CodexCarrilModelAssignments))
-		for k, v := range s.CodexCarrilModelAssignments {
-			m[k] = v
-		}
-		selection.CodexCarrilModelAssignments = m
+		selection.CodexCarrilModelAssignments = model.MigrateLegacyCodexCarrilDefaults(s.CodexCarrilModelAssignments)
 	}
 	if len(selection.CodexPhaseModelAssignments) == 0 && len(s.CodexPhaseModelAssignments) > 0 {
 		m := make(map[string]string, len(s.CodexPhaseModelAssignments))

@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
@@ -3191,15 +3193,7 @@ func setupCodexSyncHomeWithPhaseModels(t *testing.T, carrilModels map[string]str
 	return home
 }
 
-// TestRunSync_RestoresCodexCarrilAssignments verifies that RunSync reads
-// CodexCarrilModelAssignments from state.json and uses them when writing
-// Codex profile files (model key present).
 func TestRunSync_RestoresCodexCarrilAssignments(t *testing.T) {
-	home := setupCodexSyncHome(t,
-		map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini"},
-		nil,
-	)
-
 	restoreHome := osUserHomeDir
 	restoreCommand := runCommand
 	restoreLookPath := cmdLookPath
@@ -3209,26 +3203,124 @@ func TestRunSync_RestoresCodexCarrilAssignments(t *testing.T) {
 		cmdLookPath = restoreLookPath
 	})
 
+	runCommand = func(string, ...string) error { return nil }
+	cmdLookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+
+	tests := []struct {
+		name      string
+		persisted map[string]string
+		want      map[string]string
+		runs      int
+	}{
+		{name: "migrates exact legacy defaults repeatedly", persisted: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini"}, want: model.DefaultCarrilModels(), runs: 2},
+		{name: "preserves custom tuple", persisted: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.4", "sdd-cheap": "gpt-5.4-mini"}, want: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.4", "sdd-cheap": "gpt-5.4-mini"}, runs: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(codex.SetRuntimeVersionCommandForTest("codex-cli 0.144.0", nil))
+			home := t.TempDir()
+			if err := state.Write(home, state.InstallState{InstalledAgents: []string{"codex"}, CodexCarrilModelAssignments: tt.persisted}); err != nil {
+				t.Fatalf("state.Write: %v", err)
+			}
+			osUserHomeDir = func() (string, error) { return home, nil }
+
+			var firstProfiles map[string][]byte
+			for run := 0; run < tt.runs; run++ {
+				result, err := RunSync([]string{"--agents", "codex"})
+				if err != nil {
+					t.Fatalf("RunSync() run %d error = %v", run+1, err)
+				}
+				if !reflect.DeepEqual(result.Selection.CodexCarrilModelAssignments, tt.want) {
+					t.Fatalf("run %d carril assignments = %#v, want %#v", run+1, result.Selection.CodexCarrilModelAssignments, tt.want)
+				}
+				profiles := make(map[string][]byte, 3)
+				for _, name := range []string{"sdd-strong.config.toml", "sdd-mid.config.toml", "sdd-cheap.config.toml"} {
+					body, err := os.ReadFile(filepath.Join(home, ".codex", name))
+					if err != nil {
+						t.Fatalf("run %d ReadFile(%s): %v", run+1, name, err)
+					}
+					profiles[name] = body
+				}
+				if run == 0 {
+					if result.NoOp || result.FilesChanged == 0 {
+						t.Fatalf("first sync metadata = NoOp %v, FilesChanged %d; want managed changes", result.NoOp, result.FilesChanged)
+					}
+					firstProfiles = profiles
+				} else {
+					for name, first := range firstProfiles {
+						if !bytes.Equal(profiles[name], first) {
+							t.Fatalf("%s changed between repeated syncs", name)
+						}
+					}
+					if !result.NoOp || result.FilesChanged != 0 || len(result.ChangedFiles) != 0 {
+						t.Fatalf("second sync metadata = NoOp %v, FilesChanged %d, ChangedFiles %#v; want no changes", result.NoOp, result.FilesChanged, result.ChangedFiles)
+					}
+				}
+			}
+
+			content, err := os.ReadFile(filepath.Join(home, ".codex", "sdd-strong.config.toml"))
+			if err != nil {
+				t.Fatalf("ReadFile(sdd-strong.config.toml): %v", err)
+			}
+			if !strings.Contains(string(content), tt.want["sdd-strong"]) {
+				t.Fatalf("sdd-strong.config.toml missing %q; got:\n%s", tt.want["sdd-strong"], content)
+			}
+		})
+	}
+}
+
+func TestRunSyncPreservesCompletePersistedState(t *testing.T) {
+	t.Cleanup(codex.SetRuntimeVersionCommandForTest("codex-cli 0.144.0", nil))
+	home := t.TempDir()
+	lastUpdate := time.Date(2026, time.July, 11, 12, 0, 0, 0, time.UTC)
+	before := state.InstallState{
+		InstalledAgents: []string{"codex", "opencode"},
+		ClaudeModelAssignments: map[string]string{
+			"sdd-archive": "haiku",
+		},
+		ClaudePhaseAssignments: map[string]state.ClaudePhaseAssignmentState{
+			"sdd-verify": {Model: "opus", Effort: "high"},
+		},
+		KiroModelAssignments: map[string]string{"sdd-design": "sonnet"},
+		CodexModelAssignments: map[string]string{
+			"sdd-apply": "medium",
+		},
+		CodexOrchestratorAssignment: &state.CodexOrchestratorAssignmentState{Model: "gpt-5.6-sol", Effort: "low"},
+		CodexCarrilModelAssignments: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini"},
+		CodexPhaseModelAssignments:  map[string]string{"sdd-apply": "gpt-5.6-terra"},
+		ModelAssignments: map[string]state.ModelAssignmentState{
+			"sdd-init": {ProviderID: "anthropic", ModelID: "claude-sonnet-4", Effort: "medium"},
+		},
+		Persona:         "neutral",
+		LastUpdateCheck: &lastUpdate,
+		PendingSync:     true,
+	}
+	if err := state.Write(home, before); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	restoreHome := osUserHomeDir
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+	})
 	osUserHomeDir = func() (string, error) { return home, nil }
 	runCommand = func(string, ...string) error { return nil }
 	cmdLookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
 
-	_, err := RunSync([]string{"--agents", "codex"})
-	if err != nil {
+	if _, err := RunSync([]string{"--agents", "codex"}); err != nil {
 		t.Fatalf("RunSync() error = %v", err)
 	}
-
-	// The sdd-strong.config.toml profile must have both model and model_reasoning_effort.
-	strongProfile := filepath.Join(home, ".codex", "sdd-strong.config.toml")
-	content, readErr := os.ReadFile(strongProfile)
-	if readErr != nil {
-		t.Fatalf("ReadFile(%q) error = %v", strongProfile, readErr)
+	after, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read after sync: %v", err)
 	}
-	if !strings.Contains(string(content), `model`) {
-		t.Errorf("sdd-strong.config.toml missing model key; got:\n%s", content)
-	}
-	if !strings.Contains(string(content), "gpt-5.5") {
-		t.Errorf("sdd-strong.config.toml: expected gpt-5.5; got:\n%s", content)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("CLI sync changed persisted state:\nafter:  %#v\nbefore: %#v", after, before)
 	}
 }
 

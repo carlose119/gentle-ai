@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -60,8 +61,7 @@ type SyncResult struct {
 	// were already current (idempotent re-sync).
 	NoOp bool
 	// FilesChanged is the number of deduplicated managed file paths
-	// processed during this sync. A file is counted when at least one
-	// component reports it as part of its injection result.
+	// whose persisted content or existence changed during this sync.
 	// Zero means all assets were already current.
 	FilesChanged int
 	// ChangedFiles lists deduplicated absolute paths of managed files
@@ -382,7 +382,8 @@ type syncRuntime struct {
 	agentIDs     []model.AgentID
 	backupRoot   string
 	state        *runtimeState
-	changedFiles []string // accumulates absolute paths of files that actually changed
+	managedPaths []string
+	changedFiles []string // accumulates candidate paths reported by component injectors
 }
 
 func newSyncRuntime(homeDir string, selection model.Selection) (*syncRuntime, error) {
@@ -407,6 +408,7 @@ func newSyncRuntime(homeDir string, selection model.Selection) (*syncRuntime, er
 func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 	adapters := resolveAdapters(r.agentIDs)
 	targets := syncBackupTargets(r.homeDir, r.workspaceDir, r.selection, adapters)
+	r.managedPaths = targets
 
 	prepare := []pipeline.Step{
 		prepareBackupStep{
@@ -568,10 +570,9 @@ func managedOutputStyleFile(persona model.PersonaID) string {
 // Unlike componentApplyStep, it ONLY calls inject functions —
 // no binary install, no engram setup, no persona injection.
 //
-// changedFiles is a shared slice pointer. Each step appends the file
-// paths from its InjectionResult.Files when InjectionResult.Changed
-// is true. Paths may contain duplicates across components; the caller
-// (RunSync) deduplicates before exposing them via SyncResult.
+// changedFiles is a shared slice pointer. Each step appends candidate paths
+// from its aggregate InjectionResult when any file changed. RunSync compares
+// candidates with pre-sync snapshots before exposing persisted changes.
 type componentSyncStep struct {
 	id           string
 	component    model.ComponentID
@@ -813,7 +814,7 @@ func (s componentSyncStep) Run() error {
 	}
 }
 
-// countChanged records the file paths that were actually changed (nil-safe).
+// countChanged records candidate changed paths from an aggregate injector result.
 func (s componentSyncStep) countChanged(n int, files ...string) {
 	if s.changedFiles != nil && n > 0 {
 		*s.changedFiles = append(*s.changedFiles, files...)
@@ -837,6 +838,48 @@ func dedupPaths(paths []string) []string {
 		}
 	}
 	return out
+}
+
+type syncFileSnapshot struct {
+	exists bool
+	data   []byte
+}
+
+func snapshotSyncFiles(paths []string) (map[string]syncFileSnapshot, error) {
+	snapshots := make(map[string]syncFileSnapshot, len(paths))
+	for _, path := range dedupPaths(paths) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				snapshots[path] = syncFileSnapshot{}
+				continue
+			}
+			return nil, fmt.Errorf("snapshot managed sync file %q: %w", path, err)
+		}
+		snapshots[path] = syncFileSnapshot{exists: true, data: data}
+	}
+	return snapshots, nil
+}
+
+func changedSyncFiles(candidates []string, before map[string]syncFileSnapshot) ([]string, error) {
+	var changed []string
+	for _, path := range dedupPaths(candidates) {
+		after, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if before[path].exists {
+					changed = append(changed, path)
+				}
+				continue
+			}
+			return nil, fmt.Errorf("compare managed sync file %q: %w", path, err)
+		}
+		previous := before[path]
+		if !previous.exists || !bytes.Equal(after, previous.data) {
+			changed = append(changed, path)
+		}
+	}
+	return changed, nil
 }
 
 // boolToInt converts a boolean to 0 or 1.
@@ -914,6 +957,10 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 
 	stagePlan := rt.stagePlan()
 	result.Plan = stagePlan
+	before, err := snapshotSyncFiles(rt.managedPaths)
+	if err != nil {
+		return result, err
+	}
 
 	orchestrator := pipeline.NewOrchestrator(pipeline.DefaultRollbackPolicy())
 	result.Execution = orchestrator.Execute(stagePlan)
@@ -924,7 +971,10 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 	// Capture how many managed assets were actually changed.
 	// Deduplicate paths — multiple components may touch the same file
 	// (e.g. Engram and Context7 both merge into settings.json).
-	result.ChangedFiles = dedupPaths(rt.changedFiles)
+	result.ChangedFiles, err = changedSyncFiles(rt.changedFiles, before)
+	if err != nil {
+		return result, err
+	}
 	result.FilesChanged = len(result.ChangedFiles)
 
 	// True no-op: agents were discovered but all managed assets were already
@@ -1032,11 +1082,7 @@ func RunSync(args []string) (SyncResult, error) {
 		selection.CodexModelAssignments = m
 	}
 	if len(selection.CodexCarrilModelAssignments) == 0 && len(persistedState.CodexCarrilModelAssignments) > 0 {
-		m := make(map[string]string, len(persistedState.CodexCarrilModelAssignments))
-		for k, v := range persistedState.CodexCarrilModelAssignments {
-			m[k] = v
-		}
-		selection.CodexCarrilModelAssignments = m
+		selection.CodexCarrilModelAssignments = model.MigrateLegacyCodexCarrilDefaults(persistedState.CodexCarrilModelAssignments)
 	}
 	if len(selection.CodexPhaseModelAssignments) == 0 && len(persistedState.CodexPhaseModelAssignments) > 0 {
 		m := make(map[string]string, len(persistedState.CodexPhaseModelAssignments))

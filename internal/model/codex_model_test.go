@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -226,6 +227,33 @@ func TestDefaultCarrilModels(t *testing.T) {
 	}
 	if len(m) != 3 {
 		t.Errorf("DefaultCarrilModels() has %d entries, want 3", len(m))
+	}
+}
+
+func TestMigrateLegacyCodexCarrilDefaults(t *testing.T) {
+	legacy := map[string]string{
+		"sdd-strong": "gpt-5.5",
+		"sdd-mid":    "gpt-5.5",
+		"sdd-cheap":  "gpt-5.4-mini",
+	}
+	tests := []struct {
+		name  string
+		input map[string]string
+		want  map[string]string
+	}{
+		{name: "exact legacy tuple", input: legacy, want: model.DefaultCarrilModels()},
+		{name: "different value", input: map[string]string{"sdd-cheap": "gpt-5.4", "sdd-mid": "gpt-5.5", "sdd-strong": "gpt-5.5"}, want: map[string]string{"sdd-cheap": "gpt-5.4", "sdd-mid": "gpt-5.5", "sdd-strong": "gpt-5.5"}},
+		{name: "partial map", input: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5"}, want: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5"}},
+		{name: "extra key", input: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini", "custom": "gpt-5.6-sol"}, want: map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini", "custom": "gpt-5.6-sol"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := model.MigrateLegacyCodexCarrilDefaults(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("MigrateLegacyCodexCarrilDefaults() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
