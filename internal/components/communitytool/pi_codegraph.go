@@ -1057,19 +1057,8 @@ func (j *piJournal) validate(path string) error {
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refuse symlink Pi CodeGraph path %q", path)
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	for _, root := range j.roots {
-		rootAbs, rootErr := filepath.Abs(root)
-		if rootErr != nil {
-			continue
-		}
-		rel, relErr := filepath.Rel(rootAbs, abs)
-		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil
-		}
+	if piCodeGraphPathWithinRoots(path, j.roots) {
+		return nil
 	}
 	return fmt.Errorf("Pi CodeGraph path %q escapes allowed roots", path)
 }

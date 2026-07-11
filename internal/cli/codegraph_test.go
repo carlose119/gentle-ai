@@ -103,3 +103,38 @@ func TestRunCodeGraphInitRejectsUnsafeOrUnrecognizedRoots(t *testing.T) {
 		})
 	}
 }
+
+func TestRunCodeGraphInitAcceptsProjectBelowHome(t *testing.T) {
+	workspace := t.TempDir()
+	home := filepath.Join(workspace, "home")
+	root := filepath.Join(home, "work", "project-feature")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRoot := codeGraphGitTopLevel
+	originalInit := codeGraphInit
+	originalHome := codeGraphUserHomeDir
+	originalTemp := codeGraphTempDir
+	t.Cleanup(func() {
+		codeGraphGitTopLevel = originalRoot
+		codeGraphInit = originalInit
+		codeGraphUserHomeDir = originalHome
+		codeGraphTempDir = originalTemp
+	})
+	codeGraphGitTopLevel = func(path string) (string, error) { return path, nil }
+	codeGraphUserHomeDir = func() (string, error) { return home, nil }
+	codeGraphTempDir = func() string { return filepath.Join(workspace, "temporary") }
+
+	called := false
+	codeGraphInit = func(name string, args ...string) error {
+		called = name == "codegraph" && len(args) == 2 && args[0] == "init" && args[1] == root
+		return nil
+	}
+	if err := RunCodeGraph([]string{"init", "--cwd", root}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("RunCodeGraph() error = %v", err)
+	}
+	if !called {
+		t.Fatal("codegraph init was not called for a project below HOME")
+	}
+}

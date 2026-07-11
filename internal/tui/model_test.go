@@ -704,6 +704,34 @@ func TestInstallingDoneToComplete(t *testing.T) {
 	}
 }
 
+func TestCompletionViewShowsExecutionErrorWhenStepsSucceeded(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Screen = ScreenInstalling
+	result := pipeline.ExecutionResult{
+		Apply: pipeline.StageResult{
+			Success: true,
+			Steps:   []pipeline.StepResult{{StepID: "install", Status: pipeline.StepStatusSucceeded}},
+		},
+		Err: errors.New("persist install state: atomic replacement refused"),
+	}
+
+	updated, _ := m.Update(PipelineDoneMsg{Result: result})
+	state := updated.(Model)
+	updated, _ = state.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	state = updated.(Model)
+	out := state.View()
+
+	if state.Screen != ScreenComplete {
+		t.Fatalf("screen = %v, want ScreenComplete", state.Screen)
+	}
+	if strings.Contains(out, "Done! Your AI agents are ready.") || strings.Contains(out, "completed successfully") {
+		t.Fatalf("completion output rendered success for execution error: %q", out)
+	}
+	if !strings.Contains(out, "Installation completed with errors.") || !strings.Contains(out, result.Err.Error()) {
+		t.Fatalf("completion output missing execution error: %q", out)
+	}
+}
+
 func TestBuildProgressLabelsFromResolvedPlan(t *testing.T) {
 	resolved := planner.ResolvedPlan{
 		Agents:            []model.AgentID{model.AgentClaudeCode},

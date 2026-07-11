@@ -18,6 +18,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/installcmd"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/planner"
+	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/versions"
 )
@@ -83,6 +84,38 @@ func TestRunInstallAppliesFilesystemChanges(t *testing.T) {
 	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("expected config file %q: %v", configPath, err)
+	}
+}
+
+func TestRunInstallReturnsStatePersistenceFailure(t *testing.T) {
+	home := t.TempDir()
+	restoreHome := osUserHomeDir
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	osUserHomeDir = func() (string, error) { return home, nil }
+	runCommand = func(string, ...string) error { return nil }
+	cmdLookPath = missingBinaryLookPath
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+	})
+
+	if err := state.Write(home, state.InstallState{}); err != nil {
+		t.Fatal(err)
+	}
+	statePath := state.Path(home)
+	target := filepath.Join(home, ".gentle-ai", "persisted-state.json")
+	if err := os.Rename(statePath, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, statePath); err != nil {
+		t.Skipf("state symlink unavailable: %v", err)
+	}
+
+	_, err := RunInstall([]string{"--agent", "opencode", "--component", "permissions"}, system.DetectionResult{})
+	if err == nil || !strings.Contains(err.Error(), "persist install state") {
+		t.Fatalf("RunInstall() error = %v, want state persistence failure", err)
 	}
 }
 

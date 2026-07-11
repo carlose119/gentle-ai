@@ -820,6 +820,35 @@ func TestPiCodeGraphUninstallRejectsManifestPathEscapeAndMissingOwnedChildIsSucc
 	}
 }
 
+func TestPiCodeGraphUninstallRejectsSwappedSymlinkParent(t *testing.T) {
+	home := t.TempDir()
+	parent := filepath.Join(home, ".pi", "agent", "subagents")
+	child := filepath.Join(parent, "worker.md")
+	writePiFile(t, child, "---\ntools: bash\n---\nwork\n")
+	if _, err := ReconcilePiCodeGraph(PiCodeGraphOptions{HomeDir: home, Selected: true, EffectiveMCPProbe: piProbeForTest}); err != nil {
+		t.Fatal(err)
+	}
+	managed := mustReadPiFile(t, child)
+	if err := os.Rename(parent, parent+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	externalDir := t.TempDir()
+	external := filepath.Join(externalDir, "worker.md")
+	if err := os.WriteFile(external, managed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalDir, parent); err != nil {
+		t.Skipf("parent symlink unavailable: %v", err)
+	}
+
+	if _, err := UninstallPiCodeGraph(home); err == nil {
+		t.Fatal("UninstallPiCodeGraph() error = nil, want swapped parent rejection")
+	}
+	if got := mustReadPiFile(t, external); string(got) != string(managed) {
+		t.Fatalf("external child was mutated through swapped parent: %q", got)
+	}
+}
+
 func TestPiCodeGraphConfiguredRejectsStaleGuidanceWhenBashIsRemoved(t *testing.T) {
 	home := t.TempDir()
 	child := filepath.Join(home, ".pi", "agent", "subagents", "worker.md")

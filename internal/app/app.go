@@ -525,10 +525,11 @@ func tuiExecute(
 		for _, a := range selection.Agents {
 			agentIDs = append(agentIDs, string(a))
 		}
-		// Non-fatal: a state write failure must not break an otherwise successful install.
 		claudePhaseState := claudePhaseAssignmentsToState(selection.ClaudePhaseAssignments)
-		_ = state.Write(homeDir, state.InstallState{
+		if writeErr := state.Write(homeDir, state.InstallState{
 			InstalledAgents:             agentIDs,
+			CommunityTools:              appCommunityToolIDsToStrings(selection.CommunityTools),
+			CommunityToolsConfigured:    true,
 			ClaudeModelAssignments:      claudeLegacyAssignmentsForState(selection.ClaudeModelAssignments, claudePhaseState),
 			ClaudePhaseAssignments:      claudePhaseState,
 			KiroModelAssignments:        kiroAliasesToStrings(selection.KiroModelAssignments),
@@ -538,10 +539,23 @@ func tuiExecute(
 			CodexPhaseModelAssignments:  selection.CodexPhaseModelAssignments,
 			ModelAssignments:            modelAssignmentsToState(selection.ModelAssignments),
 			Persona:                     string(selection.Persona),
-		})
+		}); writeErr != nil {
+			execResult.Err = fmt.Errorf("persist install state: %w", writeErr)
+		}
 	}
 
 	return execResult
+}
+
+func appCommunityToolIDsToStrings(tools []model.CommunityToolID) []string {
+	if tools == nil {
+		return nil
+	}
+	result := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		result = append(result, string(tool))
+	}
+	return result
 }
 
 // tuiRestore restores a backup from its manifest.

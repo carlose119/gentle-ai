@@ -1,6 +1,7 @@
 package communitytool
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -131,7 +132,14 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 	result := Result{Tool: id}
 	before := DetectStatus(id, homeDir, detector)
 	result.StatusBefore = &before
-	if before.CodeGraphReconcileSatisfied() || (before.CLI == AvailabilityAvailable && hasDetectedCodeGraphToolWiring(homeDir)) {
+	if before.CodeGraphReconcileSatisfied() || codeGraphCanRepairWithoutFullInstall(homeDir, before) {
+		if NeedsOpenCodeCodeGraphReconcile(homeDir) {
+			result.CommandsRun = append(result.CommandsRun, "codegraph install --target opencode --location global --yes")
+		}
+		openCodeResult, err := ReconcileOpenCodeCodeGraph(homeDir, runner)
+		if err != nil {
+			return result, err
+		}
 		guidanceResult, err := InjectCodeGraphGuidanceIfSelected(homeDir, []model.CommunityToolID{id})
 		if err != nil {
 			return result, err
@@ -149,7 +157,7 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 		if err := validateCodeGraphInstallStatus(after); err != nil {
 			return result, err
 		}
-		if guidanceResult.Changed {
+		if openCodeResult.Changed || guidanceResult.Changed {
 			result.ManualActions = append(result.ManualActions, "CodeGraph is already available and MCP-configured. Agent guidance was updated so enabled agents lazily initialize project indexes when needed.")
 		} else {
 			result.ManualActions = append(result.ManualActions, "CodeGraph is already available and configured for all detected supported agents. No changes were needed.")
@@ -157,9 +165,13 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 		return result, nil
 	}
 
-	commands, err := CodeGraphCommandsForDetector(DetectorFunc(codeGraphPackageLookPath))
-	if err != nil {
-		return result, err
+	commands := [][]string{{"codegraph", "install", "--yes"}}
+	if before.CLI != AvailabilityAvailable {
+		var err error
+		commands, err = CodeGraphCommandsForDetector(DetectorFunc(codeGraphPackageLookPath))
+		if err != nil {
+			return result, err
+		}
 	}
 	for _, command := range commands {
 		if len(command) == 0 {
@@ -188,6 +200,34 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 	}
 	result.ManualActions = append(result.ManualActions, "CodeGraph CLI was installed and supported agents were connected. Project indexes will be created automatically when an enabled agent opens inside a project.")
 	return result, nil
+}
+
+func codeGraphCanRepairWithoutFullInstall(homeDir string, status Status) bool {
+	if status.CLI != AvailabilityAvailable {
+		return false
+	}
+	reg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		return false
+	}
+	foundMissing := false
+	for _, agent := range status.Agents {
+		if !agent.Detected || agent.Configured || agent.Agent == model.AgentPi {
+			continue
+		}
+		foundMissing = true
+		if agent.Agent == model.AgentOpenCode {
+			continue
+		}
+		adapter, ok := reg.Get(agent.Agent)
+		if !ok {
+			return false
+		}
+		if _, wired := hasCodeGraphToolWiring(homeDir, adapter); !wired {
+			return false
+		}
+	}
+	return foundMissing
 }
 
 func reconcileDetectedPiCodeGraph(homeDir, workspaceDir string) (*PiCodeGraphResult, error) {
@@ -355,14 +395,18 @@ func hasCodeGraphWiring(homeDir string, adapter agents.Adapter) (bool, string, s
 		return configured, piCodeGraphStatusPath(homeDir), reason
 	}
 
-	if hasCodeGraphGuidance(guidancePath) {
-		return true, guidancePath, "found CodeGraph guidance marker"
-	}
+	toolPath, hasToolWiring := hasCodeGraphToolWiring(homeDir, adapter)
 	if adapter.SupportsSystemPrompt() {
-		return false, guidancePath, "detected agent but no CodeGraph guidance marker was found in the system prompt file"
+		if !hasCodeGraphGuidance(guidancePath) {
+			return false, guidancePath, "detected agent but no CodeGraph guidance marker was found in the system prompt file"
+		}
+		if !hasToolWiring {
+			return false, guidancePath, "found CodeGraph guidance but no effective MCP/tool wiring"
+		}
+		return true, toolPath, "found CodeGraph guidance and MCP/tool wiring"
 	}
-	if path, ok := hasCodeGraphToolWiring(homeDir, adapter); ok {
-		return true, path, "found CodeGraph tool wiring marker"
+	if hasToolWiring {
+		return true, toolPath, "found CodeGraph tool wiring marker"
 	}
 	return false, adapter.GlobalConfigDir(homeDir), "detected agent but no CodeGraph MCP or instruction marker was found"
 }
@@ -389,9 +433,9 @@ func hasDetectedCodeGraphToolWiring(homeDir string) bool {
 }
 
 func hasCodeGraphToolWiring(homeDir string, adapter agents.Adapter) (string, bool) {
-	paths := []string{
-		adapter.MCPConfigPath(homeDir, "codegraph"),
-		adapter.SettingsPath(homeDir),
+	paths := codeGraphToolWiringPaths(homeDir, adapter)
+	if adapter.Agent() == model.AgentOpenCode {
+		return hasOpenCodeCodeGraphWiring(paths)
 	}
 	seen := map[string]struct{}{}
 	for _, path := range paths {
@@ -412,6 +456,145 @@ func hasCodeGraphToolWiring(homeDir string, adapter agents.Adapter) (string, boo
 		}
 	}
 	return "", false
+}
+
+func hasOpenCodeCodeGraphWiring(paths []string) (string, bool) {
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var root map[string]any
+		if json.Unmarshal(normalizeJSONC(data), &root) != nil {
+			continue
+		}
+		mcp, ok := root["mcp"].(map[string]any)
+		if !ok || !isEffectiveOpenCodeCodeGraphEntry(mcp["codegraph"]) {
+			continue
+		}
+		return path, true
+	}
+	return "", false
+}
+
+func isEffectiveOpenCodeCodeGraphEntry(value any) bool {
+	entry, ok := value.(map[string]any)
+	if !ok || entry["type"] != "local" {
+		return false
+	}
+	if enabled, exists := entry["enabled"]; exists && enabled != true {
+		return false
+	}
+	command, ok := entry["command"].([]any)
+	if !ok || len(command) != 3 {
+		return false
+	}
+	return command[0] == "codegraph" && command[1] == "serve" && command[2] == "--mcp"
+}
+
+func normalizeJSONC(data []byte) []byte {
+	withoutComments := append([]byte(nil), data...)
+	inString := false
+	escaped := false
+	for i := 0; i < len(withoutComments); i++ {
+		current := withoutComments[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case current == '\\':
+				escaped = true
+			case current == '"':
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			continue
+		}
+		if current != '/' || i+1 >= len(withoutComments) {
+			continue
+		}
+		switch withoutComments[i+1] {
+		case '/':
+			withoutComments[i], withoutComments[i+1] = ' ', ' '
+			i += 2
+			for ; i < len(withoutComments) && withoutComments[i] != '\n'; i++ {
+				withoutComments[i] = ' '
+			}
+			i--
+		case '*':
+			withoutComments[i], withoutComments[i+1] = ' ', ' '
+			i += 2
+			for ; i+1 < len(withoutComments); i++ {
+				if withoutComments[i] == '*' && withoutComments[i+1] == '/' {
+					withoutComments[i], withoutComments[i+1] = ' ', ' '
+					i++
+					break
+				}
+				if withoutComments[i] != '\n' && withoutComments[i] != '\r' {
+					withoutComments[i] = ' '
+				}
+			}
+		}
+	}
+
+	normalized := make([]byte, 0, len(withoutComments))
+	inString = false
+	escaped = false
+	for i, current := range withoutComments {
+		if inString {
+			normalized = append(normalized, current)
+			switch {
+			case escaped:
+				escaped = false
+			case current == '\\':
+				escaped = true
+			case current == '"':
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			normalized = append(normalized, current)
+			continue
+		}
+		if current == ',' {
+			next := i + 1
+			for next < len(withoutComments) && (withoutComments[next] == ' ' || withoutComments[next] == '\t' || withoutComments[next] == '\r' || withoutComments[next] == '\n') {
+				next++
+			}
+			if next < len(withoutComments) && (withoutComments[next] == '}' || withoutComments[next] == ']') {
+				continue
+			}
+		}
+		normalized = append(normalized, current)
+	}
+	return normalized
+}
+
+func codeGraphToolWiringPaths(homeDir string, adapter agents.Adapter) []string {
+	paths := []string{
+		adapter.MCPConfigPath(homeDir, "codegraph"),
+		adapter.SettingsPath(homeDir),
+	}
+	if adapter.Agent() == model.AgentOpenCode {
+		settingsPath := adapter.SettingsPath(homeDir)
+		if strings.HasSuffix(settingsPath, ".json") {
+			paths = append(paths, strings.TrimSuffix(settingsPath, ".json")+".jsonc")
+		}
+	}
+	return paths
 }
 
 func agentDisplayName(id model.AgentID) string {

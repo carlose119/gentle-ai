@@ -79,23 +79,23 @@ func (a *Adapter) InstallCommand(profile system.PlatformProfile) ([][]string, er
 // --- Config paths ---
 
 func (a *Adapter) GlobalConfigDir(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "opencode")
+	return ConfigPath(homeDir)
 }
 
 func (a *Adapter) SystemPromptDir(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "opencode")
+	return ConfigPath(homeDir)
 }
 
 func (a *Adapter) SystemPromptFile(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "opencode", "AGENTS.md")
+	return filepath.Join(ConfigPath(homeDir), "AGENTS.md")
 }
 
 func (a *Adapter) SkillsDir(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "opencode", "skills")
+	return filepath.Join(ConfigPath(homeDir), "skills")
 }
 
 func (a *Adapter) SettingsPath(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "opencode", "opencode.json")
+	return filepath.Join(ConfigPath(homeDir), "opencode.json")
 }
 
 // --- Config strategies ---
@@ -113,7 +113,7 @@ func (a *Adapter) MCPStrategy() model.MCPStrategy {
 func (a *Adapter) MCPConfigPath(homeDir string, serverName string) string {
 	// OpenCode merges into opencode.json, but this provides the path
 	// for components that use the separate-file strategy fallback.
-	return filepath.Join(homeDir, ".config", "opencode", "opencode.json")
+	return filepath.Join(ConfigPath(homeDir), "opencode.json")
 }
 
 // --- Optional capabilities ---
@@ -131,7 +131,7 @@ func (a *Adapter) SupportsSlashCommands() bool {
 }
 
 func (a *Adapter) CommandsDir(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "opencode", "commands")
+	return filepath.Join(ConfigPath(homeDir), "commands")
 }
 
 func (a *Adapter) SupportsSubAgents() bool {

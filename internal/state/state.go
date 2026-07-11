@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 )
 
 const stateDir = ".gentle-ai"
@@ -37,6 +39,11 @@ type ClaudePhaseAssignmentState struct {
 // InstallState holds the persisted user selections from the last install run.
 type InstallState struct {
 	InstalledAgents []string `json:"installed_agents"`
+	// CommunityTools records optional tools explicitly selected in the Gentle AI
+	// installer. Configured distinguishes a completed empty selection from legacy
+	// state files that predate persistence of this choice.
+	CommunityTools           []string `json:"community_tools,omitempty"`
+	CommunityToolsConfigured bool     `json:"community_tools_configured,omitempty"`
 
 	// ClaudeModelAssignments maps SDD phase names (e.g. "sdd-explore") to a
 	// Claude model alias ("fable", "opus", "sonnet", "haiku"). Persisted so that
@@ -123,9 +130,8 @@ func Read(homeDir string) (InstallState, error) {
 
 // MergeAgents returns a new InstallState that combines existing with the
 // provided newAgents. The new agents are appended to existing.InstalledAgents
-// with deduplication. All other fields (ModelAssignments,
-// ClaudeModelAssignments, KiroModelAssignments, Persona) are taken from
-// existing and are never overwritten.
+// with deduplication. All other persisted selections, including community
+// tools, model assignments, and persona, are preserved from existing.
 //
 // This is the correct operation for an incremental `--agent X` install: the
 // caller loads the persisted state, calls MergeAgents, and writes the result
@@ -150,6 +156,8 @@ func MergeAgents(existing InstallState, newAgents []string) InstallState {
 
 	return InstallState{
 		InstalledAgents:             merged,
+		CommunityTools:              existing.CommunityTools,
+		CommunityToolsConfigured:    existing.CommunityToolsConfigured,
 		ModelAssignments:            existing.ModelAssignments,
 		ClaudeModelAssignments:      existing.ClaudeModelAssignments,
 		ClaudePhaseAssignments:      existing.ClaudePhaseAssignments,
@@ -175,5 +183,6 @@ func Write(homeDir string, s InstallState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(Path(homeDir), append(data, '\n'), 0o644)
+	_, err = filemerge.WriteFileAtomic(Path(homeDir), append(data, '\n'), 0o644)
+	return err
 }

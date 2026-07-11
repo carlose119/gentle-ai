@@ -67,20 +67,30 @@ func isUnsafeCodeGraphRoot(root string) bool {
 	if root == string(filepath.Separator) {
 		return true
 	}
-	for _, restricted := range []string{codeGraphTempDir(), codeGraphHomeDir()} {
-		if restricted == "" {
-			continue
-		}
-		canonicalRestricted, err := filepath.EvalSymlinks(restricted)
-		if err != nil {
-			canonicalRestricted = restricted
-		}
-		canonicalRestricted, err = filepath.Abs(canonicalRestricted)
-		if err == nil && pathIsWithin(canonicalRestricted, root) {
-			return true
-		}
+	home := canonicalCodeGraphRestrictedPath(codeGraphHomeDir())
+	if home != "" && root == home {
+		return true
+	}
+	temp := canonicalCodeGraphRestrictedPath(codeGraphTempDir())
+	if temp != "" && pathIsWithin(temp, root) {
+		return true
 	}
 	return false
+}
+
+func canonicalCodeGraphRestrictedPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		canonical = path
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil {
+		return ""
+	}
+	return canonical
 }
 
 func codeGraphHomeDir() string {

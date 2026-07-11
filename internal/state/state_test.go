@@ -16,6 +16,7 @@ func TestMergeAgents(t *testing.T) {
 	}
 	existingClaude := map[string]string{"sdd-explore": "sonnet", "sdd-archive": "haiku"}
 	existingKiro := map[string]string{"sdd-design": "opus"}
+	existingCommunityTools := []string{"codegraph"}
 
 	tests := []struct {
 		name      string
@@ -50,11 +51,13 @@ func TestMergeAgents(t *testing.T) {
 		{
 			name: "model_assignments preserved across merge",
 			existing: InstallState{
-				InstalledAgents:        []string{"opencode"},
-				ModelAssignments:       existingAssignments,
-				ClaudeModelAssignments: existingClaude,
-				KiroModelAssignments:   existingKiro,
-				Persona:                "gentleman",
+				InstalledAgents:          []string{"opencode"},
+				CommunityTools:           existingCommunityTools,
+				CommunityToolsConfigured: true,
+				ModelAssignments:         existingAssignments,
+				ClaudeModelAssignments:   existingClaude,
+				KiroModelAssignments:     existingKiro,
+				Persona:                  "gentleman",
 			},
 			newAgents: []string{"pi"},
 			wantIDs:   []string{"opencode", "pi"},
@@ -82,7 +85,29 @@ func TestMergeAgents(t *testing.T) {
 			if got.Persona != tt.existing.Persona {
 				t.Errorf("Persona not preserved: got %q, want %q", got.Persona, tt.existing.Persona)
 			}
+			if !reflect.DeepEqual(got.CommunityTools, tt.existing.CommunityTools) || got.CommunityToolsConfigured != tt.existing.CommunityToolsConfigured {
+				t.Errorf("CommunityTools not preserved: got (%v, %t), want (%v, %t)", got.CommunityTools, got.CommunityToolsConfigured, tt.existing.CommunityTools, tt.existing.CommunityToolsConfigured)
+			}
 		})
+	}
+}
+
+func TestCommunityToolsRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	want := InstallState{
+		InstalledAgents:          []string{"opencode"},
+		CommunityTools:           []string{"codegraph"},
+		CommunityToolsConfigured: true,
+	}
+	if err := Write(home, want); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	got, err := Read(home)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if !reflect.DeepEqual(got.CommunityTools, want.CommunityTools) || !got.CommunityToolsConfigured {
+		t.Fatalf("community tool state = (%v, %t), want (%v, true)", got.CommunityTools, got.CommunityToolsConfigured, want.CommunityTools)
 	}
 }
 
@@ -225,6 +250,35 @@ func TestWriteOverwrite(t *testing.T) {
 	want := []string{"opencode", "gemini-cli"}
 	if !reflect.DeepEqual(s.InstalledAgents, want) {
 		t.Errorf("InstalledAgents after overwrite = %v, want %v", s.InstalledAgents, want)
+	}
+}
+
+func TestWriteFailurePreservesExistingState(t *testing.T) {
+	home := t.TempDir()
+	original := InstallState{InstalledAgents: []string{"opencode"}, Persona: "neutral"}
+	if err := Write(home, original); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := Path(home)
+	stateTarget := filepath.Join(home, stateDir, "persisted-state.json")
+	if err := os.Rename(statePath, stateTarget); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(stateTarget, statePath); err != nil {
+		t.Skipf("state symlink unavailable: %v", err)
+	}
+
+	err := Write(home, InstallState{InstalledAgents: []string{"claude-code"}})
+	if err == nil {
+		t.Fatal("Write() error = nil, want atomic replacement refusal")
+	}
+	got, readErr := Read(home)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(got, original) {
+		t.Fatalf("state after failed Write() = %#v, want %#v", got, original)
 	}
 }
 

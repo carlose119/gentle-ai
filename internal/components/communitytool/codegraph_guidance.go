@@ -65,7 +65,7 @@ func InjectCodeGraphGuidanceIfSelected(homeDir string, selected []model.Communit
 // has CodeGraph wiring or a managed guidance marker. This prevents normal sync
 // from introducing CodeGraph prompts for users who never installed/enabled it.
 func RefreshCodeGraphGuidanceIfConfigured(homeDir string, detector Detector) (GuidanceInjectionResult, bool, error) {
-	if !HasConfiguredCodeGraph(homeDir, detector) && !hasAvailableLegacyCodeGraphGuidance(homeDir, detector) {
+	if !HasConfiguredCodeGraph(homeDir, detector) && !hasAvailableCodeGraphGuidance(homeDir, detector) {
 		return GuidanceInjectionResult{}, false, nil
 	}
 
@@ -73,9 +73,9 @@ func RefreshCodeGraphGuidanceIfConfigured(homeDir string, detector Detector) (Gu
 	return result, true, err
 }
 
-func hasAvailableLegacyCodeGraphGuidance(homeDir string, detector Detector) bool {
+func hasAvailableCodeGraphGuidance(homeDir string, detector Detector) bool {
 	status := DetectStatus(model.CommunityToolCodeGraph, homeDir, detector)
-	return status.CLI == AvailabilityAvailable && HasLegacyCodeGraphGuidance(homeDir)
+	return status.CLI == AvailabilityAvailable && HasAnyCodeGraphGuidance(homeDir)
 }
 
 func HasConfiguredCodeGraph(homeDir string, detector Detector) bool {
@@ -98,6 +98,23 @@ func HasLegacyCodeGraphGuidance(homeDir string) bool {
 			continue
 		}
 		if containsLegacyCodeGraphGuidance(string(data)) {
+			return true
+		}
+	}
+	return false
+}
+
+func HasAnyCodeGraphGuidance(homeDir string) bool {
+	return HasManagedCodeGraphGuidance(homeDir) || HasLegacyCodeGraphGuidance(homeDir)
+}
+
+func HasManagedCodeGraphGuidance(homeDir string) bool {
+	for _, path := range CodeGraphGuidancePaths(homeDir) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "<!-- gentle-ai:"+codeGraphGuidanceSectionID+" -->") {
 			return true
 		}
 	}
@@ -181,6 +198,104 @@ func CodeGraphGuidancePaths(homeDir string) []string {
 		}
 	}
 	return paths
+}
+
+// CodeGraphManagedPaths returns every detected agent file that CodeGraph setup
+// or managed guidance may update. Sync uses this complete set for backup and
+// changed-file accounting before invoking the upstream installer.
+func CodeGraphManagedPaths(homeDir string) []string {
+	reg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		return nil
+	}
+
+	paths := append([]string(nil), CodeGraphGuidancePaths(homeDir)...)
+	for _, installedAgent := range agents.DiscoverInstalled(reg, homeDir) {
+		adapter, ok := reg.Get(installedAgent.ID)
+		if !ok || !isCodeGraphSupportedAgent(installedAgent.ID) {
+			continue
+		}
+		paths = append(paths, codeGraphToolWiringPaths(homeDir, adapter)...)
+	}
+
+	seen := make(map[string]struct{}, len(paths))
+	managed := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		managed = append(managed, path)
+	}
+	slices.Sort(managed)
+	return managed
+}
+
+func NeedsOpenCodeCodeGraphReconcile(homeDir string) bool {
+	reg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		return false
+	}
+	adapter, ok := reg.Get(model.AgentOpenCode)
+	if !ok {
+		return false
+	}
+	detected := slices.ContainsFunc(agents.DiscoverInstalled(reg, homeDir), func(agent agents.InstalledAgent) bool {
+		return agent.ID == model.AgentOpenCode
+	})
+	if !detected {
+		return false
+	}
+	_, configured := hasCodeGraphToolWiring(homeDir, adapter)
+	return !configured
+}
+
+// ReconcileOpenCodeCodeGraph delegates JSON/JSONC editing to CodeGraph's own
+// installer so comments and unrelated user configuration remain untouched.
+func ReconcileOpenCodeCodeGraph(homeDir string, runner Runner) (GuidanceInjectionResult, error) {
+	if !NeedsOpenCodeCodeGraphReconcile(homeDir) {
+		return GuidanceInjectionResult{}, nil
+	}
+	if runner == nil {
+		return GuidanceInjectionResult{}, fmt.Errorf("OpenCode CodeGraph reconciliation runner is not configured")
+	}
+
+	paths := CodeGraphManagedPaths(homeDir)
+	before := readCodeGraphManagedFiles(paths)
+	if err := runner.Run("codegraph", "install", "--target", "opencode", "--location", "global", "--yes"); err != nil {
+		return GuidanceInjectionResult{}, fmt.Errorf("reconcile OpenCode CodeGraph MCP wiring: %w", err)
+	}
+	if NeedsOpenCodeCodeGraphReconcile(homeDir) {
+		return GuidanceInjectionResult{}, fmt.Errorf("CodeGraph installer did not create effective OpenCode MCP wiring")
+	}
+
+	result := GuidanceInjectionResult{}
+	for _, path := range paths {
+		after, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return result, fmt.Errorf("read reconciled CodeGraph file %q: %w", path, err)
+		}
+		if string(after) == before[path] {
+			continue
+		}
+		result.Changed = true
+		result.Files = append(result.Files, path)
+	}
+	return result, nil
+}
+
+func readCodeGraphManagedFiles(paths []string) map[string]string {
+	files := make(map[string]string, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			files[path] = string(data)
+		}
+	}
+	return files
 }
 
 func injectCodeGraphGuidanceForAgent(homeDir string, adapter agents.Adapter) (string, bool, error) {

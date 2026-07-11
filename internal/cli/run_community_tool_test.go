@@ -208,7 +208,7 @@ func TestRenderInstallManualActionsIncludesPiCodeGraphDrift(t *testing.T) {
 	}
 }
 
-func TestCodeGraphGuidanceMarkdownForSDDOnlyWhenSelectedOrConfigured(t *testing.T) {
+func TestCodeGraphGuidanceMarkdownForSDDOnlyWhenSelected(t *testing.T) {
 	tests := []struct {
 		name      string
 		setupHome func(t *testing.T, home string)
@@ -231,7 +231,7 @@ func TestCodeGraphGuidanceMarkdownForSDDOnlyWhenSelectedOrConfigured(t *testing.
 			want:     true,
 		},
 		{
-			name: "configured guidance marker",
+			name: "managed guidance without selection",
 			setupHome: func(t *testing.T, home string) {
 				mustWriteFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), []byte(strings.Join([]string{
 					"existing Claude guidance",
@@ -241,10 +241,9 @@ func TestCodeGraphGuidanceMarkdownForSDDOnlyWhenSelectedOrConfigured(t *testing.
 				}, "\n")))
 			},
 			lookPath: func(string) (string, error) { return "/bin/codegraph", nil },
-			want:     true,
 		},
 		{
-			name: "configured MCP marker",
+			name: "MCP wiring without selection",
 			setupHome: func(t *testing.T, home string) {
 				mustWriteFile(t, filepath.Join(home, ".codex", "config.toml"), []byte(strings.Join([]string{
 					`[mcp_servers.codegraph]`,
@@ -252,10 +251,9 @@ func TestCodeGraphGuidanceMarkdownForSDDOnlyWhenSelectedOrConfigured(t *testing.
 				}, "\n")))
 			},
 			lookPath: func(string) (string, error) { return "/bin/codegraph", nil },
-			want:     true,
 		},
 		{
-			name: "legacy marker with CLI available",
+			name: "legacy marker without selection",
 			setupHome: func(t *testing.T, home string) {
 				mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{}`))
 				mustWriteFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte(strings.Join([]string{
@@ -266,7 +264,6 @@ func TestCodeGraphGuidanceMarkdownForSDDOnlyWhenSelectedOrConfigured(t *testing.
 				}, "\n")))
 			},
 			lookPath: func(string) (string, error) { return "/bin/codegraph", nil },
-			want:     true,
 		},
 	}
 
@@ -318,7 +315,7 @@ func TestComponentApplyStepInjectsCodeGraphGuidanceWhenCodeGraphSelected(t *test
 	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, true)
 }
 
-func TestComponentApplyStepInjectsCodeGraphGuidanceWhenCodeGraphConfigured(t *testing.T) {
+func TestComponentApplyStepOmitsCodeGraphGuidanceWithoutSelection(t *testing.T) {
 	home := t.TempDir()
 	withCodeGraphLookPath(t, func(string) (string, error) { return "/bin/codegraph", nil })
 	mustWriteFile(t, filepath.Join(home, ".codex", "config.toml"), []byte(strings.Join([]string{
@@ -345,7 +342,7 @@ func TestComponentApplyStepInjectsCodeGraphGuidanceWhenCodeGraphConfigured(t *te
 		t.Fatalf("componentApplyStep.Run() error = %v", err)
 	}
 
-	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, true)
+	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, false)
 }
 
 func TestComponentApplyStepOmitsCodeGraphGuidanceWhenOnlyCLIAvailable(t *testing.T) {
@@ -368,7 +365,7 @@ func TestComponentApplyStepOmitsCodeGraphGuidanceWhenOnlyCLIAvailable(t *testing
 	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, false)
 }
 
-func TestComponentSyncStepInjectsCodeGraphGuidanceFromLegacyMarker(t *testing.T) {
+func TestComponentSyncStepOmitsCodeGraphGuidanceFromLegacyMarkerWithoutSelection(t *testing.T) {
 	home := t.TempDir()
 	withCodeGraphLookPath(t, func(string) (string, error) { return "/bin/codegraph", nil })
 	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{}`))
@@ -393,7 +390,7 @@ func TestComponentSyncStepInjectsCodeGraphGuidanceFromLegacyMarker(t *testing.T)
 		t.Fatalf("componentSyncStep.Run() error = %v", err)
 	}
 
-	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, true)
+	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, false)
 }
 
 func TestCommunityToolInstallStepUsesInjectableInstaller(t *testing.T) {
@@ -540,9 +537,12 @@ func TestPiCodeGraphRuntimeOutputClassification(t *testing.T) {
 	}
 }
 
-func TestSyncPlanAlwaysIncludesPiCodeGraphReconciliationAfterComponents(t *testing.T) {
+func TestSyncPlanIncludesPiCodeGraphReconciliationAfterComponentsWhenSelected(t *testing.T) {
 	home := t.TempDir()
-	runtime, err := newSyncRuntime(home, model.Selection{Agents: []model.AgentID{model.AgentPi}})
+	runtime, err := newSyncRuntime(home, model.Selection{
+		Agents:         []model.AgentID{model.AgentPi},
+		CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

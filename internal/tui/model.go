@@ -3914,6 +3914,9 @@ func extractFailedSteps(result pipeline.ExecutionResult) []screens.FailedStep {
 	}
 	collect(result.Prepare.Steps)
 	collect(result.Apply.Steps)
+	if result.Err != nil && len(failed) == 0 {
+		failed = append(failed, screens.FailedStep{ID: "install", Error: result.Err.Error()})
+	}
 	return failed
 }
 

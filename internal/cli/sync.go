@@ -3,9 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +18,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/communitytool"
 	"github.com/gentleman-programming/gentle-ai/internal/components/engram"
+	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/internal/components/gga"
 	"github.com/gentleman-programming/gentle-ai/internal/components/mcp"
 	"github.com/gentleman-programming/gentle-ai/internal/components/permissions"
@@ -440,23 +444,17 @@ func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 		})
 	}
 
-	if shouldHandleCodeGraphGuidance(r.homeDir) {
-		apply = append(apply, codeGraphGuidanceSyncStep{
+	if r.selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		apply = append(apply, &codeGraphGuidanceSyncStep{
 			id:           "sync:community-tool:codegraph-guidance",
 			homeDir:      r.homeDir,
+			runner:       codeGraphHomeRunner{homeDir: r.homeDir},
 			changedFiles: &r.changedFiles,
 		})
+		apply = append(apply, piCodeGraphSyncStep{id: "sync:community-tool:pi-codegraph", homeDir: r.homeDir, workspaceDir: r.workspaceDir, changedFiles: &r.changedFiles})
 	}
-	apply = append(apply, piCodeGraphSyncStep{id: "sync:community-tool:pi-codegraph", homeDir: r.homeDir, workspaceDir: r.workspaceDir, changedFiles: &r.changedFiles})
 
 	return pipeline.StagePlan{Prepare: prepare, Apply: apply}
-}
-
-// shouldHandleCodeGraphGuidance gates both managed CodeGraph guidance refresh
-// and cleanup of legacy guidance blocks left by older installers.
-func shouldHandleCodeGraphGuidance(homeDir string) bool {
-	return communitytool.HasConfiguredCodeGraph(homeDir, communitytool.DetectorFunc(cmdLookPath)) ||
-		communitytool.HasLegacyCodeGraphGuidance(homeDir)
 }
 
 // syncBackupTargets returns the file paths that need to be backed up
@@ -470,8 +468,8 @@ func syncBackupTargets(homeDir, workspaceDir string, selection model.Selection, 
 			paths[path] = struct{}{}
 		}
 	}
-	if shouldHandleCodeGraphGuidance(homeDir) {
-		for _, path := range communitytool.CodeGraphGuidancePaths(homeDir) {
+	if selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		for _, path := range communitytool.CodeGraphManagedPaths(homeDir) {
 			paths[path] = struct{}{}
 		}
 	}
@@ -586,7 +584,9 @@ type componentSyncStep struct {
 type codeGraphGuidanceSyncStep struct {
 	id           string
 	homeDir      string
+	runner       communitytool.Runner
 	changedFiles *[]string
+	before       map[string]syncFileSnapshot
 }
 
 type piCodeGraphSyncStep struct {
@@ -594,9 +594,11 @@ type piCodeGraphSyncStep struct {
 	changedFiles              *[]string
 }
 
+var refreshPiCodeGraphIfConfigured = communitytool.RefreshPiCodeGraphIfConfigured
+
 func (s piCodeGraphSyncStep) ID() string { return s.id }
 func (s piCodeGraphSyncStep) Run() error {
-	result, configured, err := communitytool.RefreshPiCodeGraphIfConfigured(s.homeDir, s.workspaceDir)
+	result, configured, err := refreshPiCodeGraphIfConfigured(s.homeDir, s.workspaceDir)
 	if err != nil {
 		return fmt.Errorf("sync Pi CodeGraph: %w", err)
 	}
@@ -606,11 +608,33 @@ func (s piCodeGraphSyncStep) Run() error {
 	return nil
 }
 
-func (s codeGraphGuidanceSyncStep) ID() string {
+func (s *codeGraphGuidanceSyncStep) ID() string {
 	return s.id
 }
 
-func (s codeGraphGuidanceSyncStep) Run() error {
+func (s *codeGraphGuidanceSyncStep) Run() (runErr error) {
+	before, err := snapshotSyncFiles(communitytool.CodeGraphManagedPaths(s.homeDir))
+	if err != nil {
+		return err
+	}
+	s.before = before
+	defer func() {
+		if runErr != nil {
+			runErr = errors.Join(runErr, restoreSyncFiles(s.before))
+		}
+	}()
+
+	status := communitytool.DetectStatus(model.CommunityToolCodeGraph, s.homeDir, communitytool.DetectorFunc(cmdLookPath))
+	if status.CLI == communitytool.AvailabilityAvailable && communitytool.NeedsOpenCodeCodeGraphReconcile(s.homeDir) {
+		reconciled, err := communitytool.ReconcileOpenCodeCodeGraph(s.homeDir, s.runner)
+		if err != nil {
+			return fmt.Errorf("sync OpenCode CodeGraph wiring: %w", err)
+		}
+		if s.changedFiles != nil && reconciled.Changed {
+			*s.changedFiles = append(*s.changedFiles, reconciled.Files...)
+		}
+	}
+
 	res, configured, err := communitytool.RefreshCodeGraphGuidanceIfConfigured(s.homeDir, communitytool.DetectorFunc(cmdLookPath))
 	if err != nil {
 		return fmt.Errorf("sync CodeGraph guidance: %w", err)
@@ -625,6 +649,50 @@ func (s codeGraphGuidanceSyncStep) Run() error {
 		*s.changedFiles = append(*s.changedFiles, res.Files...)
 	}
 	return nil
+}
+
+func (s *codeGraphGuidanceSyncStep) Rollback() error {
+	return restoreSyncFiles(s.before)
+}
+
+type codeGraphHomeRunner struct {
+	homeDir string
+}
+
+func (r codeGraphHomeRunner) Run(name string, args ...string) error {
+	command := exec.Command(name, args...)
+	actualHome, _ := os.UserHomeDir()
+	if filepath.Clean(r.homeDir) != filepath.Clean(actualHome) {
+		command.Env = overrideCommandEnvironment(os.Environ(), map[string]string{
+			"HOME":            r.homeDir,
+			"XDG_CONFIG_HOME": filepath.Join(r.homeDir, ".config"),
+		})
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message != "" {
+			return fmt.Errorf("%w: %s", err, message)
+		}
+	}
+	return err
+}
+
+func overrideCommandEnvironment(environment []string, overrides map[string]string) []string {
+	result := make([]string, 0, len(environment)+len(overrides))
+	for _, entry := range environment {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, overridden := overrides[key]; overridden {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	for key, value := range overrides {
+		result = append(result, key+"="+value)
+	}
+	return result
 }
 
 func (s componentSyncStep) ID() string {
@@ -718,7 +786,7 @@ func (s componentSyncStep) Run() error {
 				StrictTDD:                          s.selection.StrictTDD,
 				PreserveOpenCodeOrchestratorPrompt: profileStrategy == model.SDDProfileStrategyExternalSingleActive,
 				Profiles:                           profiles,
-				CodeGraphGuidanceMarkdown:          codeGraphGuidanceMarkdownForSDD(s.homeDir, nil),
+				CodeGraphGuidanceMarkdown:          codeGraphGuidanceMarkdownForSDD(s.homeDir, s.selection.CommunityTools),
 			}
 			res, err := sdd.Inject(targetDir, adapter, sddMode, opts)
 			if err != nil {
@@ -841,24 +909,144 @@ func dedupPaths(paths []string) []string {
 }
 
 type syncFileSnapshot struct {
-	exists bool
-	data   []byte
+	exists       bool
+	data         []byte
+	mode         os.FileMode
+	symlink      bool
+	linkTarget   string
+	targetPath   string
+	targetExists bool
 }
 
 func snapshotSyncFiles(paths []string) (map[string]syncFileSnapshot, error) {
 	snapshots := make(map[string]syncFileSnapshot, len(paths))
 	for _, path := range dedupPaths(paths) {
-		data, err := os.ReadFile(path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				snapshots[path] = syncFileSnapshot{}
 				continue
 			}
+			return nil, fmt.Errorf("inspect managed sync file %q: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return nil, fmt.Errorf("read managed sync symlink %q: %w", path, err)
+			}
+			targetPath := linkTarget
+			if !filepath.IsAbs(targetPath) {
+				targetPath = filepath.Join(filepath.Dir(path), targetPath)
+			}
+			targetPath, targetInfo, targetExists, err := resolveSyncSymlinkTarget(targetPath)
+			if err != nil {
+				return nil, fmt.Errorf("resolve managed sync symlink target for %q: %w", path, err)
+			}
+			if !targetExists {
+				snapshots[path] = syncFileSnapshot{exists: true, symlink: true, linkTarget: linkTarget, targetPath: targetPath}
+				continue
+			}
+			data, err := os.ReadFile(targetPath)
+			if err != nil {
+				return nil, fmt.Errorf("snapshot managed sync symlink target %q: %w", targetPath, err)
+			}
+			snapshots[path] = syncFileSnapshot{
+				exists:       true,
+				data:         data,
+				mode:         targetInfo.Mode().Perm(),
+				symlink:      true,
+				linkTarget:   linkTarget,
+				targetPath:   targetPath,
+				targetExists: true,
+			}
+			continue
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
 			return nil, fmt.Errorf("snapshot managed sync file %q: %w", path, err)
 		}
-		snapshots[path] = syncFileSnapshot{exists: true, data: data}
+		snapshots[path] = syncFileSnapshot{exists: true, data: data, mode: info.Mode().Perm()}
 	}
 	return snapshots, nil
+}
+
+func resolveSyncSymlinkTarget(path string) (string, os.FileInfo, bool, error) {
+	current, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", nil, false, err
+	}
+	seen := map[string]struct{}{}
+	for {
+		if _, exists := seen[current]; exists {
+			return "", nil, false, fmt.Errorf("symlink cycle at %q", current)
+		}
+		seen[current] = struct{}{}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return current, nil, false, nil
+			}
+			return "", nil, false, err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return current, info, true, nil
+		}
+		next, err := os.Readlink(current)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if !filepath.IsAbs(next) {
+			next = filepath.Join(filepath.Dir(current), next)
+		}
+		current = filepath.Clean(next)
+	}
+}
+
+func restoreSyncFiles(snapshots map[string]syncFileSnapshot) error {
+	var restoreErr error
+	for path, snapshot := range snapshots {
+		if !snapshot.exists {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("remove newly created sync file %q: %w", path, err))
+			}
+			continue
+		}
+		mode := snapshot.mode
+		if snapshot.symlink {
+			if snapshot.targetExists {
+				if _, err := filemerge.WriteFileAtomic(snapshot.targetPath, snapshot.data, mode); err != nil {
+					restoreErr = errors.Join(restoreErr, fmt.Errorf("restore sync symlink target %q: %w", snapshot.targetPath, err))
+					continue
+				}
+				if err := os.Chmod(snapshot.targetPath, mode); err != nil {
+					restoreErr = errors.Join(restoreErr, fmt.Errorf("restore sync symlink target mode %q: %w", snapshot.targetPath, err))
+					continue
+				}
+			} else {
+				if err := os.Remove(snapshot.targetPath); err != nil && !os.IsNotExist(err) {
+					restoreErr = errors.Join(restoreErr, fmt.Errorf("remove newly created sync symlink target %q: %w", snapshot.targetPath, err))
+					continue
+				}
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("replace managed sync symlink %q: %w", path, err))
+				continue
+			}
+			if err := os.Symlink(snapshot.linkTarget, path); err != nil {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("restore managed sync symlink %q: %w", path, err))
+			}
+			continue
+		}
+		if _, err := filemerge.WriteFileAtomic(path, snapshot.data, mode); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore sync file %q: %w", path, err))
+			continue
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore sync file mode %q: %w", path, err))
+		}
+	}
+	return restoreErr
 }
 
 func changedSyncFiles(candidates []string, before map[string]syncFileSnapshot) ([]string, error) {
@@ -923,6 +1111,8 @@ func applyResolvedPersona(selection *model.Selection, persisted string) {
 // This is the function the TUI calls directly to avoid CLI flag parsing.
 func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult, error) {
 	agentIDs := selection.Agents
+	persistedState, persistedStateErr := state.Read(homeDir)
+	restorePersistedCommunityTools(homeDir, &selection, persistedState)
 
 	// Resolve persona from persisted state when the caller has not provided one.
 	// RunSync already resolves persona before delegating here, so on the CLI path
@@ -931,9 +1121,7 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 	// we read state once here and apply the persisted value (or neutral fallback).
 	if selection.Persona == "" {
 		var persistedPersona string
-		if s, err := state.Read(homeDir); err == nil {
-			persistedPersona = s.Persona
-		}
+		persistedPersona = persistedState.Persona
 		applyResolvedPersona(&selection, persistedPersona)
 	}
 
@@ -990,6 +1178,13 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 	if !result.Verify.Ready {
 		return result, fmt.Errorf("post-sync verification failed:\n%s", verify.RenderReport(result.Verify))
 	}
+	if persistedStateErr == nil && !persistedState.CommunityToolsConfigured && selection.CommunityTools != nil {
+		persistedState.CommunityTools = communityToolIDsToStrings(selection.CommunityTools)
+		persistedState.CommunityToolsConfigured = true
+		if err := state.Write(homeDir, persistedState); err != nil {
+			return result, fmt.Errorf("persist migrated community tool selection: %w", err)
+		}
+	}
 
 	return result, nil
 }
@@ -1023,6 +1218,7 @@ func RunSync(args []string) (SyncResult, error) {
 	// On error (e.g. state.json absent), treat persisted values as empty — model
 	// maps stay as-is and persona falls back to neutral.
 	persistedState, _ := state.Read(homeDir)
+	restorePersistedCommunityTools(homeDir, &selection, persistedState)
 
 	// Load persisted model assignments from state when not provided via flags.
 	// Without this, every CLI sync falls back to defaults and would silently
@@ -1123,6 +1319,43 @@ func RunSync(args []string) (SyncResult, error) {
 	}
 	result.DryRun = false
 	return result, nil
+}
+
+func restorePersistedCommunityTools(homeDir string, selection *model.Selection, persisted state.InstallState) {
+	if selection.CommunityTools != nil {
+		return
+	}
+	if persisted.CommunityToolsConfigured {
+		selection.CommunityTools = make([]model.CommunityToolID, 0, len(persisted.CommunityTools))
+		for _, tool := range persisted.CommunityTools {
+			if model.CommunityToolID(tool) == model.CommunityToolCodeGraph {
+				selection.CommunityTools = append(selection.CommunityTools, model.CommunityToolCodeGraph)
+			}
+		}
+		return
+	}
+	if communitytool.HasManagedCodeGraphGuidance(homeDir) || hasManagedPiCodeGraphManifest(homeDir) {
+		selection.CommunityTools = []model.CommunityToolID{model.CommunityToolCodeGraph}
+	}
+}
+
+func hasManagedPiCodeGraphManifest(homeDir string) bool {
+	path := filepath.Join(homeDir, ".gentle-ai", "pi-codegraph.json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		MCPPath string `json:"mcpPath"`
+		MCP     *struct {
+			AfterHash string `json:"afterHash"`
+		} `json:"mcp"`
+	}
+	return json.Unmarshal(data, &manifest) == nil && filepath.IsAbs(manifest.MCPPath) && manifest.MCP != nil && manifest.MCP.AfterHash != ""
 }
 
 // RenderSyncReport renders a human-readable summary of a sync execution.

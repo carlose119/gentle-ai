@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/internal/components/communitytool"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
@@ -639,8 +641,9 @@ func TestComponentSyncStepRunsGGAInjectWithoutBinaryInstall(t *testing.T) {
 
 func TestCodeGraphGuidanceSyncStepRefreshesOldMarkerWhenConfigured(t *testing.T) {
 	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
 	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
-	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{}`))
+	mustWriteFile(t, settingsPath, []byte(`{}`))
 	mustWriteFile(t, agentsPath, []byte(strings.Join([]string{
 		"custom notes",
 		"<!-- gentle-ai:codegraph-guidance -->",
@@ -659,8 +662,12 @@ func TestCodeGraphGuidanceSyncStepRefreshesOldMarkerWhenConfigured(t *testing.T)
 
 	var changed []string
 	step := codeGraphGuidanceSyncStep{
-		id:           "sync:community-tool:codegraph-guidance",
-		homeDir:      home,
+		id:      "sync:community-tool:codegraph-guidance",
+		homeDir: home,
+		runner: communitytool.RunnerFunc(func(string, ...string) error {
+			mustWriteFile(t, settingsPath, []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`))
+			return nil
+		}),
 		changedFiles: &changed,
 	}
 	if err := step.Run(); err != nil {
@@ -678,15 +685,213 @@ func TestCodeGraphGuidanceSyncStepRefreshesOldMarkerWhenConfigured(t *testing.T)
 	if !strings.Contains(text, "immediately run `gentle-ai codegraph init --cwd <project-root>`") || !strings.Contains(text, "custom notes") {
 		t.Fatalf("latest guidance/user content missing after sync refresh:\n%s", text)
 	}
-	if !reflect.DeepEqual(changed, []string{agentsPath}) {
-		t.Fatalf("changed files = %#v, want %#v", changed, []string{agentsPath})
+	if !reflect.DeepEqual(changed, []string{settingsPath, agentsPath}) {
+		t.Fatalf("changed files = %#v, want %#v", changed, []string{settingsPath, agentsPath})
+	}
+}
+
+func TestCodeGraphGuidanceSyncStepRestoresPartialInstallerFailure(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+	mustWriteFile(t, settingsPath, []byte(`{}`))
+	mustWriteFile(t, agentsPath, []byte("<!-- gentle-ai:codegraph-guidance -->\nmanaged\n<!-- /gentle-ai:codegraph-guidance -->\n"))
+
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() { cmdLookPath = restoreLookPath })
+	cmdLookPath = func(string) (string, error) { return "/bin/codegraph", nil }
+
+	step := codeGraphGuidanceSyncStep{
+		id:      "sync:community-tool:codegraph-guidance",
+		homeDir: home,
+		runner: communitytool.RunnerFunc(func(string, ...string) error {
+			mustWriteFile(t, settingsPath, []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`))
+			return errors.New("installer failed after write")
+		}),
+	}
+	if err := step.Run(); err == nil || !strings.Contains(err.Error(), "installer failed after write") {
+		t.Fatalf("Run() error = %v, want installer failure", err)
+	}
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != `{}` {
+		t.Fatalf("OpenCode settings after failed reconcile = %s, want original", content)
+	}
+}
+
+func TestCodeGraphGuidanceSyncStepRollbackRestoresSuccessfulReconcile(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+	mustWriteFile(t, settingsPath, []byte(`{}`))
+	mustWriteFile(t, agentsPath, []byte("<!-- gentle-ai:codegraph-guidance -->\nstale\n<!-- /gentle-ai:codegraph-guidance -->\n"))
+
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() { cmdLookPath = restoreLookPath })
+	cmdLookPath = func(string) (string, error) { return "/bin/codegraph", nil }
+
+	step := codeGraphGuidanceSyncStep{
+		id:      "sync:community-tool:codegraph-guidance",
+		homeDir: home,
+		runner: communitytool.RunnerFunc(func(string, ...string) error {
+			mustWriteFile(t, settingsPath, []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`))
+			return nil
+		}),
+	}
+	if err := step.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if err := step.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	settings, _ := os.ReadFile(settingsPath)
+	guidance, _ := os.ReadFile(agentsPath)
+	if string(settings) != `{}` || !strings.Contains(string(guidance), "stale") {
+		t.Fatalf("rollback did not restore original files: settings=%s guidance=%s", settings, guidance)
+	}
+}
+
+func TestCodeGraphGuidanceSyncStepRestoresSymlinkAfterInstallerFailure(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	innerLinkPath := filepath.Join(home, "shared", "current-opencode.json")
+	targetPath := filepath.Join(home, "shared", "versions", "opencode.json")
+	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+	mustWriteFile(t, targetPath, []byte(`{}`))
+	if err := os.Symlink(targetPath, innerLinkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(innerLinkPath, settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, agentsPath, []byte("<!-- gentle-ai:codegraph-guidance -->\nmanaged\n<!-- /gentle-ai:codegraph-guidance -->\n"))
+
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() { cmdLookPath = restoreLookPath })
+	cmdLookPath = func(string) (string, error) { return "/bin/codegraph", nil }
+
+	step := codeGraphGuidanceSyncStep{
+		id:      "sync:community-tool:codegraph-guidance",
+		homeDir: home,
+		runner: communitytool.RunnerFunc(func(string, ...string) error {
+			if err := os.Remove(settingsPath); err != nil {
+				return err
+			}
+			if err := os.WriteFile(settingsPath, []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"]}}}`), 0o644); err != nil {
+				return err
+			}
+			return errors.New("installer failed after replacing symlink")
+		}),
+	}
+	if err := step.Run(); err == nil {
+		t.Fatal("Run() error = nil, want installer failure")
+	}
+	info, err := os.Lstat(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("settings path mode = %v, want restored symlink", info.Mode())
+	}
+	linkTarget, err := os.Readlink(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerInfo, err := os.Lstat(innerLinkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkTarget != innerLinkPath || innerInfo.Mode()&os.ModeSymlink == 0 || string(content) != `{}` {
+		t.Fatalf("restored symlink = %q inner mode = %v content = %s", linkTarget, innerInfo.Mode(), content)
+	}
+}
+
+func TestCodeGraphGuidanceSyncStepPreservesBrokenSymlinkChain(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	innerLinkPath := filepath.Join(home, "shared", "current-opencode.json")
+	missingTarget := filepath.Join(home, "shared", "missing", "opencode.json")
+	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(innerLinkPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(missingTarget, innerLinkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(innerLinkPath, settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, agentsPath, []byte("<!-- gentle-ai:codegraph-guidance -->\nmanaged\n<!-- /gentle-ai:codegraph-guidance -->\n"))
+
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() { cmdLookPath = restoreLookPath })
+	cmdLookPath = func(string) (string, error) { return "/bin/codegraph", nil }
+	step := codeGraphGuidanceSyncStep{
+		id:      "sync:community-tool:codegraph-guidance",
+		homeDir: home,
+		runner: communitytool.RunnerFunc(func(string, ...string) error {
+			if err := os.Remove(settingsPath); err != nil {
+				return err
+			}
+			if err := os.WriteFile(settingsPath, []byte(`{}`), 0o644); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(missingTarget), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(missingTarget, []byte(`{"created":true}`), 0o644); err != nil {
+				return err
+			}
+			return errors.New("installer failed after replacing broken chain")
+		}),
+	}
+	if err := step.Run(); err == nil {
+		t.Fatal("Run() error = nil, want installer failure")
+	}
+	outerInfo, outerErr := os.Lstat(settingsPath)
+	innerInfo, innerErr := os.Lstat(innerLinkPath)
+	if outerErr != nil || innerErr != nil || outerInfo.Mode()&os.ModeSymlink == 0 || innerInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("broken chain was not preserved: outer=(%v, %v) inner=(%v, %v)", outerInfo, outerErr, innerInfo, innerErr)
+	}
+	if _, err := os.Stat(missingTarget); !os.IsNotExist(err) {
+		t.Fatalf("newly created final target survived rollback: %v", err)
+	}
+}
+
+func TestRestoreSyncFilesPreservesZeroMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "managed.json")
+	mustWriteFile(t, path, []byte("changed"))
+	if err := restoreSyncFiles(map[string]syncFileSnapshot{
+		path: {exists: true, data: []byte("original"), mode: 0},
+	}); err != nil {
+		t.Fatalf("restoreSyncFiles() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0 {
+		t.Fatalf("restored mode = %o, want 000", info.Mode().Perm())
 	}
 }
 
 func TestCodeGraphGuidanceSyncStepRemovesLegacySkipBlockWhenConfigured(t *testing.T) {
 	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
 	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
-	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{}`))
+	mustWriteFile(t, settingsPath, []byte(`{}`))
 	mustWriteFile(t, agentsPath, []byte(strings.Join([]string{
 		"custom notes",
 		"<!-- CODEGRAPH_START -->",
@@ -706,8 +911,12 @@ func TestCodeGraphGuidanceSyncStepRemovesLegacySkipBlockWhenConfigured(t *testin
 
 	var changed []string
 	step := codeGraphGuidanceSyncStep{
-		id:           "sync:community-tool:codegraph-guidance",
-		homeDir:      home,
+		id:      "sync:community-tool:codegraph-guidance",
+		homeDir: home,
+		runner: communitytool.RunnerFunc(func(string, ...string) error {
+			mustWriteFile(t, settingsPath, []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`))
+			return nil
+		}),
 		changedFiles: &changed,
 	}
 	if err := step.Run(); err != nil {
@@ -727,8 +936,8 @@ func TestCodeGraphGuidanceSyncStepRemovesLegacySkipBlockWhenConfigured(t *testin
 	if !strings.Contains(text, "immediately run `gentle-ai codegraph init --cwd <project-root>`") || !strings.Contains(text, "custom notes") {
 		t.Fatalf("latest guidance/user content missing after sync cleanup:\n%s", text)
 	}
-	if !reflect.DeepEqual(changed, []string{agentsPath}) {
-		t.Fatalf("changed files = %#v, want %#v", changed, []string{agentsPath})
+	if !reflect.DeepEqual(changed, []string{settingsPath, agentsPath}) {
+		t.Fatalf("changed files = %#v, want %#v", changed, []string{settingsPath, agentsPath})
 	}
 }
 
@@ -748,10 +957,6 @@ func TestCodeGraphGuidanceSyncStepRepairsCodexConfigOnlyGuidance(t *testing.T) {
 			return "", os.ErrNotExist
 		}
 		return "/bin/codegraph", nil
-	}
-
-	if !shouldHandleCodeGraphGuidance(home) {
-		t.Fatal("sync should plan CodeGraph guidance repair when Codex has CodeGraph MCP config but no managed guidance")
 	}
 
 	var changed []string
@@ -793,10 +998,6 @@ func TestCodeGraphGuidanceSyncStepCleansLegacyBlockWithoutCodeGraphCLI(t *testin
 	restoreLookPath := cmdLookPath
 	t.Cleanup(func() { cmdLookPath = restoreLookPath })
 	cmdLookPath = func(string) (string, error) { return "", os.ErrNotExist }
-
-	if !shouldHandleCodeGraphGuidance(home) {
-		t.Fatal("sync should plan legacy CodeGraph cleanup even when the CodeGraph CLI is unavailable")
-	}
 
 	var changed []string
 	step := codeGraphGuidanceSyncStep{
@@ -852,7 +1053,7 @@ func TestCodeGraphGuidanceSyncStepDoesNotInjectWhenNotConfigured(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeAddsCodeGraphRefreshStepOnlyWhenConfigured(t *testing.T) {
+func TestSyncRuntimeAddsCodeGraphStepsOnlyWhenSelected(t *testing.T) {
 	home := t.TempDir()
 	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{}`))
 	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte("<!-- gentle-ai:codegraph-guidance -->\nold\n<!-- /gentle-ai:codegraph-guidance -->\n"))
@@ -866,38 +1067,205 @@ func TestSyncRuntimeAddsCodeGraphRefreshStepOnlyWhenConfigured(t *testing.T) {
 		return "", os.ErrNotExist
 	}
 
-	rt, err := newSyncRuntime(home, model.Selection{Agents: []model.AgentID{model.AgentOpenCode}})
+	selected := model.Selection{
+		Agents:         []model.AgentID{model.AgentOpenCode},
+		CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
+	}
+	rt, err := newSyncRuntime(home, selected)
 	if err != nil {
 		t.Fatalf("newSyncRuntime() error = %v", err)
 	}
 	plan := rt.stagePlan()
 	if !hasStepID(plan.Apply, "sync:community-tool:codegraph-guidance") {
-		t.Fatalf("sync plan missing CodeGraph guidance refresh step")
+		t.Fatal("sync plan missing selected CodeGraph guidance step")
+	}
+	if !hasStepID(plan.Apply, "sync:community-tool:pi-codegraph") {
+		t.Fatal("sync plan missing selected Pi CodeGraph step")
 	}
 
-	cmdLookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	rt, err = newSyncRuntime(home, model.Selection{Agents: []model.AgentID{model.AgentOpenCode}})
 	if err != nil {
 		t.Fatalf("newSyncRuntime() error = %v", err)
 	}
 	plan = rt.stagePlan()
 	if hasStepID(plan.Apply, "sync:community-tool:codegraph-guidance") {
-		t.Fatalf("sync plan should not include CodeGraph guidance refresh when CodeGraph is not configured")
+		t.Fatal("sync plan included CodeGraph guidance without explicit selection")
+	}
+	if hasStepID(plan.Apply, "sync:community-tool:pi-codegraph") {
+		t.Fatal("sync plan included Pi CodeGraph without explicit selection")
 	}
 
-	cmdLookPath = func(name string) (string, error) {
-		if name == "codegraph" {
-			return "/bin/codegraph", nil
-		}
-		return "", os.ErrNotExist
-	}
-	paths := syncBackupTargets(home, "", model.Selection{Agents: []model.AgentID{model.AgentOpenCode}}, resolveAdapters([]model.AgentID{model.AgentOpenCode}))
+	paths := syncBackupTargets(home, "", selected, resolveAdapters([]model.AgentID{model.AgentOpenCode}))
 	for _, path := range paths {
 		if path == filepath.Join(home, ".config", "opencode", "AGENTS.md") {
 			return
 		}
 	}
 	t.Fatalf("sync backup targets should include CodeGraph guidance path when refresh step is planned; got %#v", paths)
+}
+
+func TestComponentSyncStepInjectsCodeGraphGuidanceWhenCodeGraphSelected(t *testing.T) {
+	home := t.TempDir()
+	step := componentSyncStep{
+		id:           "sync:sdd",
+		component:    model.ComponentSDD,
+		homeDir:      home,
+		workspaceDir: "/work/project",
+		agents:       []model.AgentID{model.AgentOpenCode},
+		selection: model.Selection{
+			CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
+			SDDMode:        model.SDDModeMulti,
+		},
+	}
+	if err := step.Run(); err != nil {
+		t.Fatalf("componentSyncStep.Run() error = %v", err)
+	}
+
+	assertOpenCodeSharedPromptCodeGraphGuidance(t, home, true)
+}
+
+func TestRestorePersistedCommunityToolsRequiresInstallerSelection(t *testing.T) {
+	home := t.TempDir()
+	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{}`))
+	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte("<!-- gentle-ai:codegraph-guidance -->\nmanaged\n<!-- /gentle-ai:codegraph-guidance -->\n"))
+
+	tests := []struct {
+		name      string
+		persisted state.InstallState
+		want      bool
+	}{
+		{name: "explicit selected", persisted: state.InstallState{CommunityToolsConfigured: true, CommunityTools: []string{"codegraph"}}, want: true},
+		{name: "explicit none", persisted: state.InstallState{CommunityToolsConfigured: true}},
+		{name: "legacy managed marker", persisted: state.InstallState{}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			selection := model.Selection{}
+			restorePersistedCommunityTools(home, &selection, test.persisted)
+			if got := selection.HasCommunityTool(model.CommunityToolCodeGraph); got != test.want {
+				t.Fatalf("CodeGraph selected = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRestorePersistedCommunityToolsDoesNotAdoptExternalWiring(t *testing.T) {
+	home := t.TempDir()
+	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`))
+	mustWriteFile(t, filepath.Join(home, ".pi", "agent", "mcp.json"), []byte(`{"mcpServers":{"codegraph":{"command":"codegraph"}}}`))
+
+	selection := model.Selection{}
+	restorePersistedCommunityTools(home, &selection, state.InstallState{})
+	if selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		t.Fatal("external CodeGraph wiring was treated as an installer selection")
+	}
+}
+
+func TestRunSyncMigratesLegacyManagedCodeGraphSelection(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"opencode"}, Persona: "neutral"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), []byte(`{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`))
+	mustWriteFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte("<!-- gentle-ai:codegraph-guidance -->\nmanaged\n<!-- /gentle-ai:codegraph-guidance -->\n"))
+
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() { cmdLookPath = restoreLookPath })
+	cmdLookPath = func(string) (string, error) { return "/bin/codegraph", nil }
+
+	result, err := RunSyncWithSelection(home, model.Selection{Agents: []model.AgentID{model.AgentOpenCode}, Persona: model.PersonaNeutral})
+	if err != nil {
+		t.Fatalf("RunSyncWithSelection() error = %v", err)
+	}
+	if !result.Selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		t.Fatal("legacy managed CodeGraph selection was not restored")
+	}
+	persisted, err := state.Read(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.CommunityToolsConfigured || !reflect.DeepEqual(persisted.CommunityTools, []string{"codegraph"}) {
+		t.Fatalf("persisted community tools = (%v, %t), want migrated CodeGraph selection", persisted.CommunityTools, persisted.CommunityToolsConfigured)
+	}
+}
+
+func TestRunSyncMigratesLegacyManagedPiCodeGraphSelection(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"opencode"}, Persona: "neutral"}); err != nil {
+		t.Fatal(err)
+	}
+	writeManagedPiCodeGraphManifest(t, home)
+
+	previousRefresh := refreshPiCodeGraphIfConfigured
+	refreshed := false
+	refreshPiCodeGraphIfConfigured = func(string, string) (communitytool.PiCodeGraphResult, bool, error) {
+		refreshed = true
+		return communitytool.PiCodeGraphResult{}, true, nil
+	}
+	t.Cleanup(func() { refreshPiCodeGraphIfConfigured = previousRefresh })
+
+	result, err := RunSyncWithSelection(home, model.Selection{Agents: []model.AgentID{model.AgentOpenCode}, Persona: model.PersonaNeutral})
+	if err != nil {
+		t.Fatalf("RunSyncWithSelection() error = %v", err)
+	}
+	if !result.Selection.HasCommunityTool(model.CommunityToolCodeGraph) || !refreshed {
+		t.Fatalf("legacy Pi selection = %v, refreshed = %t; want selected and reconciled", result.Selection.CommunityTools, refreshed)
+	}
+	persisted, err := state.Read(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.CommunityToolsConfigured || !reflect.DeepEqual(persisted.CommunityTools, []string{"codegraph"}) {
+		t.Fatalf("persisted community tools = (%v, %t), want migrated CodeGraph selection", persisted.CommunityTools, persisted.CommunityToolsConfigured)
+	}
+}
+
+func TestRunSyncReportsLegacySelectionMigrationPersistenceFailure(t *testing.T) {
+	home := t.TempDir()
+	original := state.InstallState{InstalledAgents: []string{"opencode"}, Persona: "neutral"}
+	if err := state.Write(home, original); err != nil {
+		t.Fatal(err)
+	}
+	statePath := state.Path(home)
+	stateTarget := filepath.Join(home, ".gentle-ai", "persisted-state.json")
+	if err := os.Rename(statePath, stateTarget); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(stateTarget, statePath); err != nil {
+		t.Skipf("state symlink unavailable: %v", err)
+	}
+	writeManagedPiCodeGraphManifest(t, home)
+
+	previousRefresh := refreshPiCodeGraphIfConfigured
+	refreshPiCodeGraphIfConfigured = func(string, string) (communitytool.PiCodeGraphResult, bool, error) {
+		return communitytool.PiCodeGraphResult{}, true, nil
+	}
+	t.Cleanup(func() { refreshPiCodeGraphIfConfigured = previousRefresh })
+
+	result, err := RunSyncWithSelection(home, model.Selection{Agents: []model.AgentID{model.AgentOpenCode}, Persona: model.PersonaNeutral})
+	if err == nil || !strings.Contains(err.Error(), "persist migrated community tool selection") {
+		t.Fatalf("RunSyncWithSelection() error = %v, want migration persistence failure", err)
+	}
+	if !result.Selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		t.Fatal("failed migration did not retain the attempted CodeGraph selection in the result")
+	}
+	persisted, readErr := state.Read(home)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if persisted.CommunityToolsConfigured || persisted.CommunityTools != nil || !reflect.DeepEqual(persisted.InstalledAgents, original.InstalledAgents) {
+		t.Fatalf("state changed after failed persistence: %#v", persisted)
+	}
+}
+
+func writeManagedPiCodeGraphManifest(t *testing.T, home string) {
+	t.Helper()
+	manifestPath := filepath.Join(home, ".gentle-ai", "pi-codegraph.json")
+	mcpPath := filepath.Join(home, ".pi", "agent", "mcp.json")
+	mustWriteFile(t, manifestPath, []byte(`{"mcpPath":`+strconv.Quote(mcpPath)+`,"mcp":{"afterHash":"managed"},"children":{}}`))
+	if err := os.Chmod(manifestPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func hasStepID(steps []pipeline.Step, id string) bool {
