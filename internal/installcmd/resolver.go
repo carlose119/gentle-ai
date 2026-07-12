@@ -274,9 +274,10 @@ func resolveGGAInstall(profile system.PlatformProfile) (CommandSequence, error) 
 		// PowerShell is used for cleanup to avoid cmd.exe quoting issues with
 		// embedded double quotes in the "if exist ... rmdir" approach.
 		cloneDst := filepath.Join(os.TempDir(), "gentleman-guardian-angel")
+		safeCloneDst := powerShellSingleQuotedValue(cloneDst)
 		bash := gitBashPath()
 		return CommandSequence{
-			{"powershell", "-NoProfile", "-Command", fmt.Sprintf("Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '%s'; exit 0", cloneDst)},
+			{"powershell", "-NoProfile", "-Command", fmt.Sprintf("$ErrorActionPreference = 'Stop'; if (Test-Path -LiteralPath '%s') { Remove-Item -Recurse -Force -LiteralPath '%s' }", safeCloneDst, safeCloneDst)},
 			{"git", "clone", "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", cloneDst},
 			{bash, bashScriptPath(profile, filepath.Join(cloneDst, "install.sh"))},
 		}, nil
@@ -286,6 +287,10 @@ func resolveGGAInstall(profile system.PlatformProfile) (CommandSequence, error) 
 			profile.OS, profile.LinuxDistro, profile.PackageManager,
 		)
 	}
+}
+
+func powerShellSingleQuotedValue(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
 }
 
 func bashScriptPath(profile system.PlatformProfile, path string) string {
