@@ -1,6 +1,7 @@
 package sddstatus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -314,12 +315,26 @@ func Resolve(options ResolveOptions) (Status, error) {
 		reviewStateReason,
 		readText(firstPath(artifactPaths.ApplyProgress)),
 	)
-	if remediationState.Reason != "" {
-		blockedReasons = append(blockedReasons, remediationState.Reason)
-	}
 	dependencies := resolveDependencies(artifacts, taskProgress, applyState, coreReady, verifyResult.Passing, remediationState.Complete)
 	nextRecommended := resolveNextRecommended(dependencies, applyState, artifacts["verifyReport"] == ArtifactDone, remediationState)
-	applyPreVerifyReviewRouting(&dependencies, &nextRecommended, &blockedReasons, applyState, artifacts["verifyReport"] == ArtifactDone, reviewState, reviewStateReason)
+	bridge := compactPreVerifyBridge{}
+	recoverable := authorityOnlyFailedReport(readText(firstPath(artifactPaths.VerifyReport)))
+	if applyState == ApplyAllDone && (artifacts["verifyReport"] != ArtifactDone || recoverable) && reviewState == nil {
+		fields, _ := authorityFailureFields(readText(firstPath(artifactPaths.VerifyReport)))
+		bridge = discoverCompactPreVerifyAuthority(context.Background(), workspaceRoot, changeName, fields["observed_authority_revision"])
+	}
+	if recoverable && bridge.Eligible && authorityChangedSinceReport(readText(firstPath(artifactPaths.VerifyReport)), bridge.Revision) {
+		dependencies.Verify = DependencyReady
+		dependencies.Archive = DependencyBlocked
+		nextRecommended = "verify"
+		remediationState = RemediationState{}
+	} else if remediationState.Reason != "" {
+		blockedReasons = append(blockedReasons, remediationState.Reason)
+	}
+	applyPreVerifyCompactBridgeRouting(&dependencies, &nextRecommended, &blockedReasons, applyState, artifacts["verifyReport"] == ArtifactDone, reviewState, bridge)
+	if !bridge.Eligible && !bridge.Relevant {
+		applyPreVerifyReviewRouting(&dependencies, &nextRecommended, &blockedReasons, applyState, artifacts["verifyReport"] == ArtifactDone, reviewState, reviewStateReason)
+	}
 
 	status := baseStatus(workspaceRoot, &changeName, &changeRoot, nextRecommended, blockedReasons)
 	status.ArtifactPaths = artifactPaths
@@ -341,6 +356,58 @@ func Resolve(options ResolveOptions) (Status, error) {
 		status.PhaseInstructions = &instructions
 	}
 	return status, nil
+}
+
+func authorityOnlyFailedReport(report string) bool {
+	fields, ok := authorityFailureFields(report)
+	return ok && fields["authority_only_failure"] == "true" && fields["missing_review_authority"] == "true" &&
+		fields["substantive_failure"] == "false" && fields["command_failed"] == "false"
+}
+
+func authorityChangedSinceReport(report, revision string) bool {
+	fields, ok := authorityFailureFields(report)
+	return ok && fields["observed_authority_revision"] != revision
+}
+
+func authorityFailureFields(report string) (map[string]string, bool) {
+	const emptyOutputHash = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+	lines, end, reason := parseLeadingEnvelope(report)
+	if reason != "" {
+		return nil, false
+	}
+	allowed := map[string]bool{
+		"schema": true, "evidence_revision": true, "verdict": true, "blockers": true, "critical_findings": true,
+		"requirements": true, "scenarios": true, "test_command": true, "test_exit_code": true, "test_output_hash": true,
+		"build_command": true, "build_exit_code": true, "build_output_hash": true, "authority_only_failure": true,
+		"missing_review_authority": true, "substantive_failure": true, "command_failed": true, "observed_authority_revision": true,
+	}
+	fields, reason := parseScalarFields(lines[1:end], allowed, "authority failure")
+	if reason != "" || len(fields) != len(allowed) || fields["schema"] != VerifyResultSchema || fields["verdict"] != "fail" {
+		return nil, false
+	}
+	for _, field := range []string{"evidence_revision", "test_output_hash", "build_output_hash", "observed_authority_revision"} {
+		if !sha256IdentityPattern.MatchString(fields[field]) {
+			return nil, false
+		}
+	}
+	if fields["test_output_hash"] != emptyOutputHash || fields["build_output_hash"] != emptyOutputHash {
+		return nil, false
+	}
+	testExit, testOK := parseNonnegativeInt(fields["test_exit_code"])
+	buildExit, buildOK := parseNonnegativeInt(fields["build_exit_code"])
+	blockers, blockersOK := parseNonnegativeInt(fields["blockers"])
+	critical, criticalOK := parseNonnegativeInt(fields["critical_findings"])
+	if !testOK || !buildOK || !blockersOK || !criticalOK || blockers == 0 || critical == 0 || testExit != 125 || buildExit != 125 {
+		return nil, false
+	}
+	if _, ok := parseVerifyCompletion(fields["requirements"]); !ok {
+		return nil, false
+	}
+	if _, ok := parseVerifyCompletion(fields["scenarios"]); !ok || !isConcreteEvidence(fields["test_command"]) || !isConcreteEvidence(fields["build_command"]) {
+		return nil, false
+	}
+	return fields, true
 }
 
 func resolveEngramStatus(workspaceRoot string, requestedChange string, includeInstructions bool) (Status, bool, error) {
@@ -460,6 +527,24 @@ func applyPreVerifyReviewRouting(dependencies *Dependencies, next *string, block
 		dependencies.Verify = DependencyBlocked
 		*next = "review"
 		*blockedReasons = append(*blockedReasons, fmt.Sprintf("bounded review transaction is %q; continue it without creating a new budget before final verification", transaction.State))
+	}
+}
+
+func applyPreVerifyCompactBridgeRouting(dependencies *Dependencies, next *string, blockedReasons *[]string, applyState ApplyState, verifyReportDone bool, transaction *reviewtransaction.Transaction, bridge compactPreVerifyBridge) {
+	if applyState != ApplyAllDone || verifyReportDone || transaction != nil {
+		return
+	}
+	if bridge.Eligible {
+		dependencies.Verify = DependencyReady
+		dependencies.Archive = DependencyBlocked
+		*next = "verify"
+		return
+	}
+	if bridge.Relevant {
+		dependencies.Verify = DependencyBlocked
+		dependencies.Archive = DependencyBlocked
+		*next = "resolve-review"
+		*blockedReasons = append(*blockedReasons, bridge.Reason)
 	}
 }
 

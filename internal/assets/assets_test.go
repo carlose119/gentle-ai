@@ -335,6 +335,31 @@ func TestAllEmbeddedAssetsAreReadable(t *testing.T) {
 	}
 }
 
+func TestSDDVerifyAuthorityPreflightDenialEnvelopeContract(t *testing.T) {
+	const denialFields = `authority_only_failure: true
+missing_review_authority: true
+substantive_failure: false
+command_failed: false
+observed_authority_revision: sha256:{observed-authority-revision}`
+
+	for _, path := range []string{
+		"skills/sdd-verify/SKILL.md",
+		"skills/sdd-verify/references/report-format.md",
+	} {
+		content := MustRead(path)
+		for _, want := range []string{
+			denialFields,
+			"test_exit_code: 125",
+			"build_exit_code: 125",
+			"must not be executed",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s missing authority-preflight denial contract %q", path, want)
+			}
+		}
+	}
+}
+
 func TestOpenCodeEmbeddedAssetLayout(t *testing.T) {
 	entries, err := FS.ReadDir("opencode")
 	if err != nil {

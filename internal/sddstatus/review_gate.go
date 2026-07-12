@@ -7,10 +7,115 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/reviewtransaction"
 )
+
+type compactPreVerifyBridge struct {
+	Eligible bool
+	Relevant bool
+	Reason   string
+	Revision string
+}
+
+func discoverCompactPreVerifyAuthority(ctx context.Context, repo, changeName, observedRevision string) compactPreVerifyBridge {
+	stores, err := reviewtransaction.DiscoverCompactStores(ctx, repo)
+	if err != nil {
+		return compactPreVerifyBridge{Reason: "no eligible path-bound compact authority found"}
+	}
+	eligible := 0
+	candidateRevision := ""
+	for _, store := range stores {
+		record, err := store.Load()
+		if err != nil {
+			return compactPreVerifyBridge{Relevant: true, Reason: "compact authority record is malformed"}
+		}
+		bound, pathReason := compactAuthorityPathsBound(record.State, changeName)
+		if !bound {
+			if pathReason != "" {
+				return compactPreVerifyBridge{Relevant: true, Reason: pathReason}
+			}
+			continue
+		}
+		if record.State.State != reviewtransaction.StateApproved {
+			return compactPreVerifyBridge{Relevant: true, Reason: "path-bound compact authority is not approved"}
+		}
+		payload, err := os.ReadFile(store.ReceiptPath())
+		if err != nil {
+			return compactPreVerifyBridge{Relevant: true, Reason: "path-bound compact authority receipt is missing"}
+		}
+		receipt, err := reviewtransaction.ParseCompactReceipt(payload)
+		authoritative, receiptErr := record.State.Receipt()
+		if err != nil || receiptErr != nil || !reflect.DeepEqual(receipt, authoritative) {
+			return compactPreVerifyBridge{Relevant: true, Reason: "path-bound compact authority receipt does not equal approved state"}
+		}
+		evaluation := reviewtransaction.EvaluateCompactGate(ctx, repo, receipt, reviewtransaction.NativeGateRequestInput{Gate: reviewtransaction.GatePostApply, LineageID: receipt.LineageID})
+		finalRecord, finalErr := store.Load()
+		finalPayload, finalReadErr := os.ReadFile(store.ReceiptPath())
+		if finalErr != nil || finalReadErr != nil || finalRecord.Revision != record.Revision || !reflect.DeepEqual(finalPayload, payload) {
+			return compactPreVerifyBridge{Relevant: true, Reason: "compact authority changed during discovery"}
+		}
+		if evaluation.Result != reviewtransaction.GateAllow {
+			if skipsObservedStalePredecessor(observedRevision, record.Revision, evaluation.Result) {
+				continue
+			}
+			return compactPreVerifyBridge{Relevant: true, Reason: "path-bound compact authority post-apply gate is not allow"}
+		}
+		eligible++
+		if eligible == 1 {
+			// The revision is immutable store evidence used only for retry routing.
+			// It never authorizes a receipt by itself.
+			candidateRevision = record.Revision
+		}
+	}
+	switch eligible {
+	case 1:
+		return compactPreVerifyBridge{Eligible: true, Revision: candidateRevision}
+	case 0:
+		return compactPreVerifyBridge{Reason: "no eligible path-bound compact authority found"}
+	default:
+		return compactPreVerifyBridge{Relevant: true, Reason: "multiple eligible path-bound compact authorities found"}
+	}
+}
+
+func skipsObservedStalePredecessor(observedRevision, revision string, result reviewtransaction.GateResult) bool {
+	return observedRevision != "" && observedRevision == revision && result == reviewtransaction.GateScopeChanged
+}
+
+func compactAuthorityPathsBound(state reviewtransaction.CompactState, changeName string) (bool, string) {
+	if !sameCanonicalPaths(state.GenesisPaths, state.InitialSnapshot.Paths) {
+		return false, "path-bound compact authority has inconsistent immutable paths"
+	}
+	prefix := "openspec/changes/" + changeName + "/"
+	matched := false
+	foreignOpenSpec := false
+	for _, raw := range state.GenesisPaths {
+		path := filepath.ToSlash(raw)
+		if filepath.IsAbs(raw) || path != filepath.ToSlash(filepath.Clean(raw)) {
+			return false, "path-bound compact authority contains a non-canonical OpenSpec path"
+		}
+		if strings.HasPrefix(path, "openspec/") {
+			if !strings.HasPrefix(path, prefix) {
+				foreignOpenSpec = true
+				continue
+			}
+			matched = true
+		}
+	}
+	if matched && foreignOpenSpec {
+		return false, "path-bound compact authority contains a foreign OpenSpec path"
+	}
+	return matched, ""
+}
+
+func sameCanonicalPaths(left, right []string) bool {
+	left, right = append([]string(nil), left...), append([]string(nil), right...)
+	sort.Strings(left)
+	sort.Strings(right)
+	return reflect.DeepEqual(left, right)
+}
 
 func readSpecCounts(paths []string) (SpecCounts, error) {
 	contents := make([]string, 0, len(paths))
