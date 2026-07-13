@@ -17,6 +17,12 @@ func renderOptions(options []string, cursor int) string {
 	return output
 }
 
+func RenderOperationRunning(title, detail string, spinnerFrame int) string {
+	return styles.TitleStyle.Render(title) + "\n\n" +
+		styles.WarningStyle.Render(SpinnerChar(spinnerFrame)+"  "+detail) + "\n\n" +
+		styles.HelpStyle.Render("Please wait...")
+}
+
 func renderCheckbox(label string, checked bool, focused bool) string {
 	marker := "[ ]"
 	markerStyle := styles.UnselectedStyle
