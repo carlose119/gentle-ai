@@ -127,8 +127,11 @@ func TestReviewCapabilitiesAdvertisesOnlyNativeSurface(t *testing.T) {
 	if !slices.Equal(result.Operations, wantOperations) || !slices.Equal(result.Gates, wantGates) || !slices.Equal(result.Projections, wantProjections) {
 		t.Fatalf("capability surface = operations %v gates %v projections %v", result.Operations, result.Gates, result.Projections)
 	}
-	if !slices.Contains(result.Schemas, ReviewIntegrationOperationSchema) || !slices.Contains(result.Schemas, ReviewIntegrationStartSchema) || !slices.Contains(result.Schemas, ReviewIntegrationStatusSchema) || !slices.Contains(result.Schemas, ReviewIntegrationProjectionSchema) {
+	if !slices.Contains(result.Schemas, reviewResultArtifactSchema) || !slices.Contains(result.Schemas, ReviewIntegrationOperationSchema) || !slices.Contains(result.Schemas, ReviewIntegrationStartSchema) || !slices.Contains(result.Schemas, ReviewIntegrationStatusSchema) || !slices.Contains(result.Schemas, ReviewIntegrationProjectionSchema) {
 		t.Fatalf("capability schemas do not advertise negotiated operations/START/status/projection: %v", result.Schemas)
+	}
+	if slices.Contains(result.Operations, "review.capture_result") {
+		t.Fatal("headless capture-result was advertised as a negotiated repository operation")
 	}
 	if result.Executable.Evidence != "self-reported" || result.Executable.Verification != "compare-with-published-manifest" || result.Executable.SHA256 != "sha256:dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705" {
 		t.Fatalf("executable identity = %#v", result.Executable)
@@ -168,6 +171,23 @@ func TestReviewCapabilitiesSchemaAndFixtureAreStrict(t *testing.T) {
 	}
 	if err := result.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	featureSchema := schema["properties"].(map[string]any)["features"].(map[string]any)["properties"].(map[string]any)
+	optionalSchema := featureSchema["optional"].(map[string]any)
+	featureNames := schema["$defs"].(map[string]any)["feature"].(map[string]any)["properties"].(map[string]any)["name"].(map[string]any)["enum"].([]any)
+	accepted := make(map[string]bool, len(featureNames))
+	for _, name := range featureNames {
+		accepted[name.(string)] = true
+	}
+	for _, surface := range [][]ReviewCapabilityFeature{result.Features.Optional, reviewCapabilitiesStaticSurface().Features.Optional} {
+		if optionalSchema["minItems"] != float64(len(surface)) || optionalSchema["maxItems"] != float64(len(surface)) {
+			t.Fatalf("optional feature bounds do not accept provider surface: %#v", optionalSchema)
+		}
+		for _, feature := range surface {
+			if !accepted[feature.Name] {
+				t.Fatalf("feature schema rejects %q", feature.Name)
+			}
+		}
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(fixture, &raw); err != nil {

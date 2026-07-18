@@ -28,6 +28,7 @@ expected_contract = [
     contract_root / "schemas/failure.schema.json",
     contract_root / "schemas/operation.schema.json",
     contract_root / "schemas/projection.schema.json",
+    contract_root / "schemas/result-artifact.schema.json",
     contract_root / "schemas/start.schema.json",
     contract_root / "schemas/status.schema.json",
 ]

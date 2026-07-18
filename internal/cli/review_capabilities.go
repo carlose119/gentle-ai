@@ -179,6 +179,7 @@ func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 			ReviewIntegrationStatusSchema,
 			reviewtransaction.ReceiptSchema,
 			reviewtransaction.CompactReceiptSchema,
+			reviewResultArtifactSchema,
 			reviewRefuterSchemaID,
 			reviewReviewerSchemaID,
 			reviewValidatorSchemaID,

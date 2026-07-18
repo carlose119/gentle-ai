@@ -200,6 +200,7 @@ var reviewFacadeCommittedTransitionHook = func(context.Context, string, string, 
 func RunReview(args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		_, _ = fmt.Fprintln(stdout, "Usage: gentle-ai review <capabilities|start|finalize|validate|status|invalidate|recover|schema|bind-sdd> [flags]\n\nOrdinary review facade; repository scope, authority, canonical artifacts, and lifecycle transitions are derived by Go.")
+		_, _ = fmt.Fprintln(stdout, "Additive headless capability: gentle-ai review capture-result.")
 		return nil
 	}
 	operation, negotiated, preflightFailure := reviewIntegrationFailureRoute(args)
@@ -265,6 +266,8 @@ func runReviewCommandContext(ctx context.Context, args []string, stdout io.Write
 
 func runReviewCommand(args []string, stdout io.Writer) error {
 	switch args[0] {
+	case "capture-result":
+		return RunReviewCaptureResult(args[1:], stdout)
 	case "capabilities":
 		return RunReviewCapabilities(args[1:], stdout)
 	case "start":
@@ -709,6 +712,8 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	tracePath := flags.String("trace", "", "optional diagnostic operation metadata trace path")
 	var resultPaths repeatedString
 	flags.Var(&resultPaths, "result", "reviewer result JSON file or - for stdin; repeat in selected-lens order")
+	var resultArtifacts repeatedString
+	flags.Var(&resultArtifacts, "result-artifact", "native reviewer artifact manifest JSON; repeat in selected-lens order")
 	if err := parseReviewFlags(flags, args); err != nil {
 		return err
 	}
@@ -725,6 +730,9 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	if countFacadeStdin(resultPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
 		return reviewPreflightError(errors.New("review finalize accepts stdin for only one input"))
 	}
+	if len(resultPaths) != 0 && len(resultArtifacts) != 0 {
+		return reviewPreflightError(errors.New("review finalize cannot mix --result and --result-artifact"))
+	}
 	root, err := (reviewtransaction.SnapshotBuilder{Repo: *cwd}).ResolveRepositoryRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve review repository root: %w", err)
@@ -739,6 +747,9 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	}
 	store.TracePath = strings.TrimSpace(*tracePath)
 	state := record.State
+	if len(resultArtifacts) != 0 && state.State != reviewtransaction.StateReviewing {
+		return reviewPreflightError(errors.New("reviewer artifacts are accepted only while the authority is reviewing"))
+	}
 	if strings.TrimSpace(*lineage) != "" {
 		leaves, err := reviewtransaction.CompactAuthorityLeaves(ctx, root)
 		if err != nil {
@@ -765,7 +776,7 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 			return err
 		}
 		if !terminalReceiptExists {
-			if !facadeFinalizeReplayInputsEmpty(resultPaths, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
+			if !facadeFinalizeReplayInputsEmpty(resultPaths, resultArtifacts, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
 				return errors.New("terminal review finalize accepts no review inputs; exact receipt replay requires only --lineage")
 			}
 			if *lineage != state.LineageID || strings.TrimSpace(*lineage) != *lineage {
@@ -798,7 +809,7 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 		}
 	}
 	exactNoInput := facadeFinalizeReplayInputsEmpty(
-		resultPaths, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath,
+		resultPaths, resultArtifacts, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath,
 	)
 	var nativeLowRiskEvidence []byte
 	if exactNoInput && facadeNativeLowRiskCandidate(state) {
@@ -809,6 +820,12 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	}
 
 	if state.State == reviewtransaction.StateReviewing {
+		if len(resultArtifacts) != 0 {
+			reviewerResults, err = readFacadeReviewerArtifacts(resultArtifacts, store.Dir, state)
+			if err != nil {
+				return reviewPreflightError(err)
+			}
+		}
 		input, err := prepareCompactReviewerResults(state, reviewerResults, refuter, facadeRepositoryEvidence{ctx: ctx, repo: root})
 		if err != nil {
 			return reviewPreflightError(err)
@@ -965,8 +982,8 @@ func facadeTerminalState(state reviewtransaction.State) bool {
 	return state == reviewtransaction.StateApproved || state == reviewtransaction.StateEscalated
 }
 
-func facadeFinalizeReplayInputsEmpty(results []string, validation, refuter, evidence string, correctionLines int, failed bool, trace string) bool {
-	return len(results) == 0 && strings.TrimSpace(validation) == "" && strings.TrimSpace(refuter) == "" &&
+func facadeFinalizeReplayInputsEmpty(results, artifacts []string, validation, refuter, evidence string, correctionLines int, failed bool, trace string) bool {
+	return len(results) == 0 && len(artifacts) == 0 && strings.TrimSpace(validation) == "" && strings.TrimSpace(refuter) == "" &&
 		strings.TrimSpace(evidence) == "" && correctionLines == 0 && !failed && strings.TrimSpace(trace) == ""
 }
 

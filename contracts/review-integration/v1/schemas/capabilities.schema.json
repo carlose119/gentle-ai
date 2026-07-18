@@ -100,8 +100,8 @@
     },
     "schemas": {
       "type": "array",
-      "minItems": 13,
-      "maxItems": 13,
+      "minItems": 14,
+      "maxItems": 14,
       "uniqueItems": true,
       "items": {
         "enum": [
@@ -115,6 +115,7 @@
           "gentle-ai.review-integration.status/v1",
           "gentle-ai.review-receipt/v1",
           "gentle-ai.review-receipt/v2",
+          "gentle-ai.review-result-artifact/v1",
           "https://gentle-ai.dev/schema/review/refuter/v1",
           "https://gentle-ai.dev/schema/review/reviewer/v1",
           "https://gentle-ai.dev/schema/review/validator/v1"
@@ -134,8 +135,8 @@
         },
         "optional": {
           "type": "array",
-          "minItems": 1,
-          "maxItems": 1,
+          "minItems": 5,
+          "maxItems": 5,
           "items": {"$ref": "#/$defs/feature"}
         }
       }
@@ -191,15 +192,19 @@
       "properties": {
         "name": {
           "enum": [
+            "bounded_process_waits",
             "compact_v2_authority",
             "exact_receipt_replay",
+            "exact_gate_receipt_discovery",
             "five_delivery_gates",
             "immutable_snapshot",
             "legacy_v1_target_scoped_read_only",
+            "native_low_risk_verification",
             "repository_independent_capabilities",
             "restart_safe_projection",
             "risk_reasons",
             "sdd_receipt_binding",
+            "scope_change_diagnostics",
             "target_scoped_status",
             "uniform_failure_envelope"
           ]

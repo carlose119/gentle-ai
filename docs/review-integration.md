@@ -55,7 +55,11 @@ Consumers MUST NOT reconstruct receipts, derive canonical hashes, inspect the Gi
 
 `review.start` is the only ordinary entry point that creates a review budget. Finalize continues that frozen lifecycle. Status, validation, and gates are read-only and never allocate a reviewer, actor, lineage, or correction budget.
 
+`gentle-ai review capture-result` is an additive headless command, not a negotiated `review-integration/v1` repository operation. It accepts no `--contract` and emits a manifest with capability `review.native_result_artifact` and schema `gentle-ai.review-result-artifact/v1`; that native artifact schema remains advertised for consumer validation.
+
 Reviewer results may omit the top-level `lens`; when present, it must match the selected-lens position returned by start. Both the short names (`risk`, `resilience`, `readability`, `reliability`) and the negotiated facade names (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) map to the same native lenses. A mismatch is rejected before authority mutation instead of being overwritten.
+
+Durable controllers capture each result with exact lineage, target, lens, and selected order, then pass the emitted manifests to FINALIZE as ordered `--result-artifact` values. Legacy `--result` files remain compatible but cannot be mixed with artifact manifests and are not a durable cross-agent handoff.
 
 Proof and evidence strings accept ordinary technical notation, including `HEAD^{tree}`, `{}`, `<A>`, and `=>`. Blank values and exact non-evidence sentinels such as `n/a`, `none`, `todo`, `tbd`, `pass`, `passed`, `success`, and `placeholder` remain invalid.
 
@@ -167,7 +171,7 @@ Pi adoption, fallback retirement, package pinning, and Pi release sequencing are
 
 Each release archive contains:
 
-- `contracts/review-integration/v1/schemas/` — six strict JSON Schemas.
+- `contracts/review-integration/v1/schemas/` — the original six strict JSON Schemas plus the result-artifact schema.
 - `contracts/review-integration/v1/fixtures/` — eight deterministic conformance fixtures, including all four target-applicability states.
 - `docs/review-integration.md` — this ownership and consumption guide.
 

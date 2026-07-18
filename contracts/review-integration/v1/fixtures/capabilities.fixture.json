@@ -54,6 +54,7 @@
     "gentle-ai.review-integration.status/v1",
     "gentle-ai.review-receipt/v1",
     "gentle-ai.review-receipt/v2",
+    "gentle-ai.review-result-artifact/v1",
     "https://gentle-ai.dev/schema/review/refuter/v1",
     "https://gentle-ai.dev/schema/review/reviewer/v1",
     "https://gentle-ai.dev/schema/review/validator/v1"
