@@ -84,11 +84,32 @@ func QuarantineMalformedLegacyFreeze(ctx context.Context, repo string, request L
 		}
 		return CompactReclaimRecord{}, fmt.Errorf("inspect legacy quarantine target: %w", err)
 	}
-	lock, err := acquireStoreLock(filepath.Join(dir, "LOCK"))
+	// Detect active lineage ownership with the per-lineage local lock only. Its
+	// handle lives inside dir, which is renamed into quarantine below; on Windows
+	// an open handle anywhere inside a directory makes the directory rename fail
+	// with "Access is denied", so this handle must be closed before the move.
+	localLock, err := acquireLocalStoreLock(filepath.Join(dir, "LOCK"))
 	if err != nil {
 		return CompactReclaimRecord{}, fmt.Errorf("review quarantine-legacy refused active ownership: %w", err)
 	}
-	defer lock.release()
+	localLockReleased := false
+	releaseLocalLock := func() error {
+		if localLockReleased {
+			return nil
+		}
+		localLockReleased = true
+		return localLock.release()
+	}
+	defer releaseLocalLock()
+	// Hold the authority-wide maintenance lock exclusively across the rename so
+	// mutual exclusion is still guaranteed once the per-lineage local lock is
+	// released. The maintenance lock lives above the lineage directory, so it is
+	// never an open handle inside the directory being moved.
+	maintenance, err := acquireMaintenanceLock(ctx, compactMaintenanceLockPath(base), maintenanceExclusive)
+	if err != nil {
+		return CompactReclaimRecord{}, err
+	}
+	defer maintenance.Release()
 	if _, err := os.Stat(filepath.Join(base, "v2", request.LineageID)); err == nil {
 		return CompactReclaimRecord{}, fmt.Errorf("review quarantine-legacy refused: lineage %q also exists in compact-v2 authority", request.LineageID)
 	} else if !os.IsNotExist(err) {
@@ -117,6 +138,13 @@ func QuarantineMalformedLegacyFreeze(ctx context.Context, repo string, request L
 	sort.Strings(residue)
 	if request.QuarantinedAt.IsZero() {
 		request.QuarantinedAt = time.Now().UTC()
+	}
+	// Close the per-lineage lock handle before renaming dir into quarantine so
+	// no open handle remains inside the directory on Windows. The exclusive
+	// maintenance lock, held until this function returns, preserves mutual
+	// exclusion across the rename.
+	if err := releaseLocalLock(); err != nil {
+		return CompactReclaimRecord{}, fmt.Errorf("release legacy lineage lock before quarantine: %w", err)
 	}
 	return quarantineCompactStoreEntry(base, dir, CompactReclaimRecord{
 		Schema: CompactReclaimRecordSchema, Status: CompactReclaimPrepared,
