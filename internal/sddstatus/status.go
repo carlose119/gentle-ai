@@ -133,6 +133,7 @@ type RemediationState struct {
 	LineageID              string `json:"lineageId"`
 	Generation             int    `json:"generation"`
 	FixBatch               int    `json:"fixBatch"`
+	CorrectionBudget       int    `json:"correctionBudget,omitempty"`
 	Reason                 string `json:"reason"`
 }
 
@@ -323,10 +324,16 @@ func Resolve(options ResolveOptions) (Status, error) {
 			blockedReasons = append(blockedReasons, evaluation.Reason)
 		}
 	}
+	remediationRequired := staleAllowAuthority == nil && artifacts["verifyReport"] == ArtifactDone && !verifyResult.Passing && applyState == ApplyAllDone
+	compactRemediation := resolveCompactRemediationAuthority(
+		context.Background(), workspaceRoot, changeName, bindingPresent, remediationRequired && reviewState == nil,
+		firstPath(artifactPaths.ReviewReceipt), "",
+	)
 	remediationState := resolveBoundedRemediation(
-		staleAllowAuthority == nil && artifacts["verifyReport"] == ArtifactDone && !verifyResult.Passing && applyState == ApplyAllDone,
+		remediationRequired,
 		verifyResult,
 		reviewState,
+		compactRemediation,
 		reviewStateReason,
 		readText(firstPath(artifactPaths.ApplyProgress)),
 	)
@@ -522,10 +529,16 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 			blockedReasons = append(blockedReasons, evaluation.Reason)
 		}
 	}
+	remediationRequired := staleAllowAuthority == nil && artifacts["verifyReport"] == ArtifactDone && !verifyResult.Passing && applyState == ApplyAllDone
+	compactRemediation := resolveCompactRemediationAuthority(
+		context.Background(), workspaceRoot, changeName, false, remediationRequired && reviewState == nil,
+		"", artifactsByType["review/receipt"].Content,
+	)
 	remediationState := resolveBoundedRemediation(
-		staleAllowAuthority == nil && artifacts["verifyReport"] == ArtifactDone && !verifyResult.Passing && applyState == ApplyAllDone,
+		remediationRequired,
 		verifyResult,
 		reviewState,
+		compactRemediation,
 		reviewStateReason,
 		artifactsByType["apply-progress"].Content,
 	)

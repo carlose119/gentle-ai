@@ -475,7 +475,7 @@ func TestBoundReviewRoutesStaleVerifyEvidenceToVerify(t *testing.T) {
 	}
 }
 
-func TestBoundReviewKeepsFailedVerdictWithCurrentSpecTotalsMismatchOnRemediationRouting(t *testing.T) {
+func TestBoundReviewGrantsCompactRemediationBudgetForFailedVerdictWithIncompleteScenarios(t *testing.T) {
 	root := t.TempDir()
 	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
 	write(t, filepath.Join(changeRoot, "specs", "auth", "spec.md"), "### Requirement: Binding\n#### Scenario: Exact authority\n#### Scenario: Added after verification\n")
@@ -489,12 +489,11 @@ func TestBoundReviewKeepsFailedVerdictWithCurrentSpecTotalsMismatchOnRemediation
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "resolve-review" {
-		t.Fatalf("verify=%q next=%q, want blocked/resolve-review for failed verdict", status.Dependencies.Verify, status.NextRecommended)
+	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "remediate" {
+		t.Fatalf("verify=%q next=%q, want blocked/remediate for failed verdict", status.Dependencies.Verify, status.NextRecommended)
 	}
-	want := "verify evidence cannot enter remediation: verify result total 1 does not match actual scenario count 2; bounded review transaction is missing"
-	if !strings.Contains(strings.Join(status.BlockedReasons, "\n"), want) {
-		t.Fatalf("BlockedReasons = %v, want containing %q", status.BlockedReasons, want)
+	if !status.RemediationState.Required || status.RemediationState.CorrectionBudget <= 0 || status.RemediationState.LineageID != "approved-thin" || status.RemediationState.FailedEvidenceRevision != shaID("a") {
+		t.Fatalf("RemediationState = %#v, want transaction-bound nonzero compact budget", status.RemediationState)
 	}
 }
 

@@ -993,23 +993,49 @@ func TestResolveEngramRejectsForeignCompactAuthorityForStaleVerifyEvidence(t *te
 	}
 }
 
-func TestResolveKeepsFailedVerdictWithCurrentSpecTotalsMismatchOnRemediationRouting(t *testing.T) {
+func TestResolveGrantsCompactRemediationBudgetForFailedVerdictWithIncompleteScenarios(t *testing.T) {
 	root := t.TempDir()
 	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
 	write(t, filepath.Join(changeRoot, "specs", "auth", "spec.md"), "### Requirement: Auth\n#### Scenario: Valid login\n#### Scenario: Added after verification\n")
 	write(t, filepath.Join(changeRoot, "verify-report.md"), boundedVerifyEnvelope(shaID("d"), "fail"))
 	writeApprovedCompactAuthorityForChange(t, root, changeRoot, "compact-thin")
+	store, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), root, "compact-thin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	status, err := Resolve(ResolveOptions{CWD: root, ChangeName: "thin"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "resolve-review" {
-		t.Fatalf("verify=%q next=%q, want blocked/resolve-review for failed verdict", status.Dependencies.Verify, status.NextRecommended)
+	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "remediate" {
+		t.Fatalf("verify=%q next=%q, want blocked/remediate for failed verdict", status.Dependencies.Verify, status.NextRecommended)
 	}
-	want := "verify evidence cannot enter remediation: verify result total 1 does not match actual scenario count 2; bounded review transaction is missing"
-	if !strings.Contains(strings.Join(status.BlockedReasons, "\n"), want) {
-		t.Fatalf("BlockedReasons = %v, want containing %q", status.BlockedReasons, want)
+	wantBudget := before.State.CorrectionBudget - before.State.CumulativeCorrectionLines
+	if !status.RemediationState.Required || status.RemediationState.CorrectionBudget != wantBudget || wantBudget <= 0 || status.RemediationState.LineageID != "compact-thin" || status.RemediationState.FailedEvidenceRevision != shaID("d") {
+		t.Fatalf("RemediationState = %#v, want transaction-bound nonzero compact budget", status.RemediationState)
+	}
+	after, err := store.Load()
+	if err != nil || after.Revision != before.Revision {
+		t.Fatalf("compact authority changed during status resolution: before=%q after=%q err=%v", before.Revision, after.Revision, err)
+	}
+}
+
+func TestResolveRejectsCompactRemediationWhenFrozenBudgetIsZero(t *testing.T) {
+	compact := reviewtransaction.CompactState{
+		LineageID: "compact-thin", Generation: 1, State: reviewtransaction.StateApproved,
+		CorrectionBudget: 2, CumulativeCorrectionLines: 2,
+	}
+	state := resolveBoundedRemediation(true, verifyResultEvaluation{
+		EvidenceRevision: shaID("d"), Reason: "scenarios are incomplete",
+	}, nil, &compact, "bounded review transaction is missing", "")
+
+	if state.Required || !strings.Contains(state.Reason, "compact review authority has no correction budget") {
+		t.Fatalf("RemediationState = %#v, want fail-closed exhausted budget", state)
 	}
 }
 

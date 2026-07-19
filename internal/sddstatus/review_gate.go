@@ -179,9 +179,38 @@ func readReviewTransaction(path, content string) (*reviewtransaction.Transaction
 	return &transaction, ""
 }
 
-func resolveBoundedRemediation(required bool, verify verifyResultEvaluation, transaction *reviewtransaction.Transaction, transactionReason, applyProgress string) RemediationState {
+func resolveBoundedRemediation(required bool, verify verifyResultEvaluation, transaction *reviewtransaction.Transaction, compact *reviewtransaction.CompactState, transactionReason, applyProgress string) RemediationState {
 	if !required {
 		return RemediationState{}
+	}
+	if transaction == nil && compact != nil {
+		if verify.EvidenceRevision == "" {
+			return RemediationState{Reason: "compact remediation requires a failed evidence revision"}
+		}
+		remainingBudget := compact.CorrectionBudget - compact.CumulativeCorrectionLines
+		if remainingBudget <= 0 {
+			return RemediationState{Reason: "compact review authority has no correction budget remaining"}
+		}
+		if len(compact.CorrectionAttempts) >= reviewtransaction.MaxCompactCorrectionAttempts {
+			return RemediationState{Reason: "compact review authority has exhausted its correction attempts"}
+		}
+		state := RemediationState{
+			Required:               true,
+			FailedEvidenceRevision: verify.EvidenceRevision,
+			LineageID:              compact.LineageID,
+			Generation:             compact.Generation,
+			FixBatch:               len(compact.CorrectionAttempts) + 1,
+			CorrectionBudget:       remainingBudget,
+			Reason:                 fmt.Sprintf("verify evidence requires bounded compact remediation for %s: %s", verify.EvidenceRevision, verify.Reason),
+		}
+		binding := RemediationBinding{LineageID: state.LineageID, Generation: state.Generation, FixBatch: state.FixBatch}
+		evaluation := parseRemediationResult(applyProgress, verify.EvidenceRevision, binding)
+		state.Complete = evaluation.Complete
+		state.Required = !evaluation.Complete
+		if evaluation.Complete {
+			state.Reason = ""
+		}
+		return state
 	}
 	if transaction == nil {
 		return RemediationState{Reason: fmt.Sprintf("verify evidence cannot enter remediation: %s; %s", verify.Reason, transactionReason)}
@@ -235,8 +264,35 @@ func resolveBoundedRemediation(required bool, verify verifyResultEvaluation, tra
 }
 
 type reviewAuthorityEvaluation struct {
-	Result reviewtransaction.GateResult
-	Reason string
+	Result       reviewtransaction.GateResult
+	Reason       string
+	CompactState *reviewtransaction.CompactState
+}
+
+func resolveCompactRemediationAuthority(ctx context.Context, repo, change string, bindingPresent, required bool, receiptPath, receiptContent string) *reviewtransaction.CompactState {
+	if !required {
+		return nil
+	}
+	if bindingPresent {
+		binding, _, err := validateBoundReview(ctx, repo, change)
+		if err != nil {
+			return nil
+		}
+		store, err := reviewtransaction.CompactAuthoritativeStore(ctx, repo, binding.Lineage)
+		if err != nil {
+			return nil
+		}
+		record, err := store.Load()
+		if err != nil || record.Revision != binding.AuthorityRevision || record.State.State != reviewtransaction.StateApproved {
+			return nil
+		}
+		return &record.State
+	}
+	evaluation := resolveReviewAuthority(ctx, repo, receiptPath, receiptContent, change)
+	if evaluation.Result != reviewtransaction.GateAllow {
+		return nil
+	}
+	return evaluation.CompactState
 }
 
 func applyReviewGate(
@@ -268,6 +324,7 @@ func resolveReviewAuthority(ctx context.Context, repo, receiptPath, receiptConte
 		}
 	}
 	var evaluation reviewtransaction.NativeGateEvaluation
+	var compactState *reviewtransaction.CompactState
 	if reviewtransaction.CompactReceiptSchemaOf(receiptPayload) == reviewtransaction.CompactReceiptSchema {
 		receipt, err := reviewtransaction.ParseCompactReceipt(receiptPayload)
 		if err != nil {
@@ -289,6 +346,7 @@ func resolveReviewAuthority(ctx context.Context, repo, receiptPath, receiptConte
 				}
 				return reviewAuthorityEvaluation{Result: reviewtransaction.GateInvalidated, Reason: reason}
 			}
+			compactState = &record.State
 		}
 		evaluation = reviewtransaction.EvaluateCompactGate(ctx, repo, receipt, reviewtransaction.NativeGateRequestInput{
 			Gate: reviewtransaction.GatePostApply, LineageID: receipt.LineageID,
@@ -308,7 +366,7 @@ func resolveReviewAuthority(ctx context.Context, repo, receiptPath, receiptConte
 	}
 	switch evaluation.Result {
 	case reviewtransaction.GateAllow:
-		return reviewAuthorityEvaluation{Result: evaluation.Result, Reason: "approved receipt exactly matches authoritative native state and the current repository"}
+		return reviewAuthorityEvaluation{Result: evaluation.Result, Reason: "approved receipt exactly matches authoritative native state and the current repository", CompactState: compactState}
 	case reviewtransaction.GateScopeChanged:
 		return reviewAuthorityEvaluation{Result: evaluation.Result, Reason: "review scope changed; maintainer must create an explicit new lineage without reusing this budget"}
 	case reviewtransaction.GateEscalated:
