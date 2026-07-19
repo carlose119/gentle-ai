@@ -21,6 +21,7 @@ The compact review store protects valid authority from accidental corruption and
 - Legal-transition validation against the currently locked state and repository-derived evidence.
 - Atomic file replacement, with file and directory synchronization where practical.
 - A writer lock and expected revision for concurrent-writer detection.
+- Native authority mutations first take a shared advisory maintenance lock at `<git-common-dir>/gentle-ai/REVIEW-MAINTENANCE.lock`, outside the replaceable `review-transactions` authority subtree, then their lineage or v2 lock; release is reversed. Approved maintenance tools take the same lock exclusively with a bounded context. The lock coordinates cooperative Gentle AI participants only and is not a defense against a malicious same-user actor.
 - Exact retry recognition for idempotent operations.
 - Live-Git gate re-derivation rather than trusting persisted mirrors.
 - Checksums only where useful for detecting accidental corruption; they are not authentication.

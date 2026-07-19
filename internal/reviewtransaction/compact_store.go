@@ -98,11 +98,12 @@ type CompactRecord struct {
 }
 
 type CompactStore struct {
-	Dir       string
-	lineageID string
-	repo      string
-	lockPath  string
-	TracePath string
+	Dir                 string
+	lineageID           string
+	repo                string
+	lockPath            string
+	maintenanceLockPath string
+	TracePath           string
 }
 
 type CompactStartAction string
@@ -528,7 +529,11 @@ func CompactAuthoritativeStore(ctx context.Context, repo, lineageID string) (Com
 	}
 	versionRoot := filepath.Join(base, "v2")
 	dir := filepath.Join(versionRoot, lineageID)
-	return CompactStore{Dir: dir, lineageID: lineageID, repo: root, lockPath: filepath.Join(versionRoot, "LOCK")}, nil
+	return CompactStore{Dir: dir, lineageID: lineageID, repo: root, lockPath: filepath.Join(versionRoot, "LOCK"), maintenanceLockPath: compactMaintenanceLockPath(base)}, nil
+}
+
+func compactMaintenanceLockPath(authorityRoot string) string {
+	return filepath.Join(filepath.Dir(authorityRoot), "REVIEW-MAINTENANCE.lock")
 }
 
 // CompactIncidentsDir returns the durable raw-result incident directory for
@@ -578,7 +583,7 @@ func DiscoverCompactStores(ctx context.Context, repo string) ([]CompactStore, er
 		}
 		stores = append(stores, CompactStore{
 			Dir: dir, lineageID: entry.Name(), repo: root,
-			lockPath: filepath.Join(versionRoot, "LOCK"),
+			lockPath: filepath.Join(versionRoot, "LOCK"), maintenanceLockPath: compactMaintenanceLockPath(base),
 		})
 	}
 	sort.Slice(stores, func(i, j int) bool { return stores[i].lineageID < stores[j].lineageID })
@@ -1019,7 +1024,16 @@ func (store CompactStore) ReplaceContext(ctx context.Context, expectedRevision, 
 	if store.lineageID != "" && next.LineageID != store.lineageID {
 		return "", fmt.Errorf("%w: compact lineage does not match store", ErrInvalidSuccessor)
 	}
-	lock, err := acquireStoreLock(store.lockPath)
+	var maintenance *MaintenanceLock
+	var err error
+	if store.maintenanceLockPath != "" {
+		maintenance, err = acquireMaintenanceLock(ctx, store.maintenanceLockPath, maintenanceShared)
+		if err != nil {
+			return "", err
+		}
+		defer maintenance.Release()
+	}
+	lock, err := acquireLocalStoreLock(store.lockPath)
 	if err != nil {
 		return "", err
 	}
@@ -1078,6 +1092,39 @@ func (store CompactStore) ReplaceContext(ctx context.Context, expectedRevision, 
 		})
 	}
 	return record.Revision, nil
+}
+
+// CaptureReviewerResult revalidates the reviewing binding while holding shared
+// maintenance access and the compact version lock before publishing an artifact.
+func (store CompactStore) CaptureReviewerResult(target, lens string, order int, publish func(CompactState) error) error {
+	deadline := time.NewTimer(maintenanceLockTimeout)
+	defer deadline.Stop()
+	var lock *storeLock
+	var err error
+	for {
+		lock, err = acquireStoreLock(store.lockPath)
+		if !errors.Is(err, ErrConcurrentUpdate) {
+			break
+		}
+		select {
+		case <-deadline.C:
+			return &AuthorityLockTimeoutError{Timeout: maintenanceLockTimeout}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	record, err := store.loadCompactRecordLocked()
+	if err != nil {
+		return err
+	}
+	state := record.State
+	if state.State != StateReviewing || state.InitialSnapshot.Identity != target || order < 0 || order >= len(state.SelectedLenses) || state.SelectedLenses[order] != lens {
+		return errors.New("capture binding does not match the current reviewing authority")
+	}
+	return publish(state)
 }
 
 func validateCompactRepositoryEvidence(ctx context.Context, repo string, current *CompactRecord, next CompactState, operation string) error {
@@ -1470,23 +1517,23 @@ func ImportCompactTransport(ctx context.Context, repo string, transport CompactT
 			return CompactRecord{}, fmt.Errorf("validate imported recovery edge: %w", err)
 		}
 	}
-	if err := store.installTransportRecord(ctx, validated.Record); err != nil {
+	lock, err := acquireStoreLock(store.lockPath)
+	if err != nil {
+		return CompactRecord{}, err
+	}
+	defer lock.release()
+	if err := store.installTransportRecordLocked(ctx, validated.Record); err != nil {
 		return CompactRecord{}, err
 	}
 	if validated.Receipt != nil {
-		if err := WriteCompactReceiptAtomic(store.ReceiptPath(), *validated.Receipt); err != nil {
+		if err := store.writeReceiptLocked(*validated.Receipt); err != nil {
 			return CompactRecord{}, err
 		}
 	}
 	return store.Load()
 }
 
-func (store CompactStore) installTransportRecord(ctx context.Context, record CompactRecord) error {
-	lock, err := acquireStoreLock(store.lockPath)
-	if err != nil {
-		return err
-	}
-	defer lock.release()
+func (store CompactStore) installTransportRecordLocked(ctx context.Context, record CompactRecord) error {
 	if existing, loadErr := store.Load(); loadErr == nil {
 		if existing.Revision == record.Revision && compactStateEqual(existing.State, record.State) {
 			return nil
@@ -1503,6 +1550,29 @@ func (store CompactStore) installTransportRecord(ctx context.Context, record Com
 		return errors.New("imported compact record checksum changed")
 	}
 	return writeAtomic(store.StatePath(), payload, 0o644)
+}
+
+// WriteReceipt validates the receipt against authoritative compact state while
+// holding maintenance shared access before the compact version lock.
+func (store CompactStore) WriteReceipt(ctx context.Context, receipt CompactReceipt) error {
+	lock, err := acquireStoreLock(store.lockPath)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	return store.writeReceiptLocked(receipt)
+}
+
+func (store CompactStore) writeReceiptLocked(receipt CompactReceipt) error {
+	record, err := store.Load()
+	if err != nil {
+		return err
+	}
+	want, err := record.State.Receipt()
+	if err != nil || !compactReceiptEqual(receipt, want) {
+		return errors.New("compact receipt does not match authority")
+	}
+	return WriteCompactReceiptAtomic(store.ReceiptPath(), receipt)
 }
 
 func validateCompactTransportDelivery(ctx context.Context, repo string, state CompactState) error {

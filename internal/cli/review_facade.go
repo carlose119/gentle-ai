@@ -154,7 +154,9 @@ func (err *reviewFacadeOperationProgressError) record(lineage, revision string) 
 	}
 }
 
-var writeCompactFacadeReceipt = reviewtransaction.WriteCompactReceiptAtomic
+var writeCompactFacadeReceipt = func(ctx context.Context, store reviewtransaction.CompactStore, receipt reviewtransaction.CompactReceipt) error {
+	return store.WriteReceipt(ctx, receipt)
+}
 var reviewFacadeSyncDirectory = reviewtransaction.SyncReviewDirectory
 var reviewRecoverBeforePersist = func() {}
 
@@ -1080,7 +1082,7 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 			return err
 		}
 	}
-	if err := writeCompactFacadeReceipt(store.ReceiptPath(), receipt); err != nil {
+	if err := writeCompactFacadeReceipt(ctx, store, receipt); err != nil {
 		return newFacadeReceiptPublicationError(state.LineageID, requestDigest, err)
 	}
 	published, err := inspectCompactFacadeReceipt(store.ReceiptPath(), receipt)

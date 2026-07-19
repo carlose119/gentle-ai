@@ -79,10 +79,11 @@ type Record struct {
 }
 
 type Store struct {
-	Dir       string
-	lineageID string
-	repo      string
-	readOnly  bool
+	Dir                 string
+	lineageID           string
+	repo                string
+	maintenanceLockPath string
+	readOnly            bool
 }
 
 type ValidatedChain struct {
@@ -109,7 +110,7 @@ func AuthoritativeStore(ctx context.Context, repo, lineageID string) (Store, err
 		return Store{}, errors.New("lineage_id escapes the repository review store")
 	}
 	_, statErr := os.Stat(filepath.Join(dir, "HEAD"))
-	return Store{Dir: dir, lineageID: lineageID, repo: root, readOnly: statErr == nil}, nil
+	return Store{Dir: dir, lineageID: lineageID, repo: root, maintenanceLockPath: filepath.Join(filepath.Dir(filepath.Dir(authorityRoot)), "REVIEW-MAINTENANCE.lock"), readOnly: statErr == nil}, nil
 }
 
 // DiscoverAuthoritativeStores returns every canonical lineage rooted in the
@@ -132,9 +133,8 @@ func DiscoverAuthoritativeStores(ctx context.Context, repo string) ([]Store, err
 		if !entry.IsDir() || validateLineageID(entry.Name()) != nil {
 			continue
 		}
-		stores = append(stores, Store{
-			Dir: filepath.Join(authorityRoot, entry.Name()), lineageID: entry.Name(), repo: root, readOnly: true,
-		})
+		stores = append(stores, Store{Dir: filepath.Join(authorityRoot, entry.Name()), lineageID: entry.Name(), repo: root,
+			maintenanceLockPath: filepath.Join(filepath.Dir(filepath.Dir(authorityRoot)), "REVIEW-MAINTENANCE.lock"), readOnly: true})
 	}
 	return stores, nil
 }
@@ -163,6 +163,14 @@ func reviewAuthorityRoot(ctx context.Context, repo string) (string, string, erro
 	commonDir, err = filepath.Abs(commonDir)
 	if err != nil {
 		return "", "", err
+	}
+	commonDir, err = filepath.EvalSymlinks(commonDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve repository Git common directory symlinks: %w", err)
+	}
+	info, err := os.Stat(commonDir)
+	if err != nil || !info.IsDir() {
+		return "", "", errors.New("repository Git common directory is not a directory")
 	}
 	authorityRoot := filepath.Join(filepath.Clean(commonDir), "gentle-ai", "review-transactions")
 	return authorityRoot, root, nil
@@ -199,11 +207,20 @@ func (store Store) append(expectedRevision string, record Record) (string, error
 	if store.lineageID != "" && record.Transaction.LineageID != store.lineageID {
 		return "", fmt.Errorf("%w: transaction lineage does not match authoritative store lineage", ErrInvalidSuccessor)
 	}
+	var maintenance *MaintenanceLock
+	var err error
+	if store.maintenanceLockPath != "" {
+		maintenance, err = acquireMaintenanceLock(context.Background(), store.maintenanceLockPath, maintenanceShared)
+		if err != nil {
+			return "", err
+		}
+		defer maintenance.Release()
+	}
 	if err := os.MkdirAll(filepath.Join(store.Dir, "events"), 0o755); err != nil {
 		return "", err
 	}
 	lockPath := filepath.Join(store.Dir, "LOCK")
-	lock, err := acquireStoreLock(lockPath)
+	lock, err := acquireLocalStoreLock(lockPath)
 	if err != nil {
 		return "", err
 	}

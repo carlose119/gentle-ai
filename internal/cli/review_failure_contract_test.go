@@ -662,7 +662,9 @@ func TestNegotiatedReceiptPublicationFailureIsSanitizedAndExactlyReplayable(t *t
 	}
 	original := writeCompactFacadeReceipt
 	secret := "raw provider stderr token=secret /tmp/authority.lock"
-	writeCompactFacadeReceipt = func(string, reviewtransaction.CompactReceipt) error { return errors.New(secret) }
+	writeCompactFacadeReceipt = func(context.Context, reviewtransaction.CompactStore, reviewtransaction.CompactReceipt) error {
+		return errors.New(secret)
+	}
 	var output bytes.Buffer
 	err = RunReview([]string{
 		"finalize", "--contract", ReviewIntegrationContractV1, "--cwd", repo,

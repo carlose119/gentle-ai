@@ -108,7 +108,12 @@ func RunReviewCaptureResult(args []string, stdout io.Writer) error {
 		return err
 	}
 	canonical = append(canonical, '\n')
-	artifact, err := captureReviewerArtifact(store.Dir, state, *order, canonical)
+	var artifact reviewResultArtifact
+	err = store.CaptureReviewerResult(*target, *lens, *order, func(current reviewtransaction.CompactState) error {
+		var captureErr error
+		artifact, captureErr = captureReviewerArtifact(store.Dir, current, *order, canonical)
+		return captureErr
+	})
 	if err != nil {
 		return reviewPreflightError(err)
 	}

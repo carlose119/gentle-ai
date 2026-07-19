@@ -608,7 +608,8 @@ func TestReviewFacadeFinalizeReceiptPublicationFailureIsExactlyReplayable(t *tes
 
 	original := writeCompactFacadeReceipt
 	writes := 0
-	writeCompactFacadeReceipt = func(path string, got reviewtransaction.CompactReceipt) error {
+	writeCompactFacadeReceipt = func(_ context.Context, store reviewtransaction.CompactStore, got reviewtransaction.CompactReceipt) error {
+		path := store.ReceiptPath()
 		writes++
 		if !reflect.DeepEqual(got, receipt) {
 			t.Fatalf("replay receipt = %#v, want %#v", got, receipt)
@@ -2015,7 +2016,9 @@ func prepareFacadeReceiptPending(t *testing.T) facadeReceiptPendingFixture {
 	}
 	sentinel := errors.New("injected receipt publication interruption")
 	original := writeCompactFacadeReceipt
-	writeCompactFacadeReceipt = func(string, reviewtransaction.CompactReceipt) error { return sentinel }
+	writeCompactFacadeReceipt = func(context.Context, reviewtransaction.CompactStore, reviewtransaction.CompactReceipt) error {
+		return sentinel
+	}
 	err = RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--evidence", evidencePath}, io.Discard)
 	writeCompactFacadeReceipt = original
 	if !errors.Is(err, sentinel) {
@@ -2041,7 +2044,7 @@ func assertFacadeReceiptReplayRejected(t *testing.T, fixture facadeReceiptPendin
 	t.Helper()
 	original := writeCompactFacadeReceipt
 	writes := 0
-	writeCompactFacadeReceipt = func(string, reviewtransaction.CompactReceipt) error {
+	writeCompactFacadeReceipt = func(context.Context, reviewtransaction.CompactStore, reviewtransaction.CompactReceipt) error {
 		writes++
 		return errors.New("unexpected receipt write")
 	}
