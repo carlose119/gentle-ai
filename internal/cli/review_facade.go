@@ -1373,7 +1373,7 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 		return discoverCompactFacadeReview(ctx, repo, lineage, true)
 	}
 	report, err := reviewtransaction.InventoryAuthority(ctx, repo)
-	if err != nil || !report.Complete || !report.Authoritative {
+	if (err != nil || !report.Complete || !report.Authoritative) && !reviewAuthorityCorruptionConfinedToLegacyEntries(report, err) {
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewAuthorityCorrupted, Category: reviewAuthorityCauseCategory(report, err)}
 	}
 	stores, err := reviewtransaction.CompactAuthorityLeaves(ctx, repo)
@@ -1479,6 +1479,35 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 	return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewReceiptUnrelated, Candidates: allLineages}
 }
 
+// reviewAuthorityCorruptionConfinedToLegacyEntries reports whether every cause
+// of a non-authoritative inventory is an invalid legacy-v1 entry, which can
+// never resolve as a compact discovery candidate. Inventory IO/layout
+// diagnostics, ambiguous locks, reset residue, mixed-store collisions, and any
+// compact-v2 problem keep lineage-less discovery fail-closed.
+func reviewAuthorityCorruptionConfinedToLegacyEntries(report reviewtransaction.AuthorityStatusReport, inventoryErr error) bool {
+	if inventoryErr != nil || len(report.Diagnostics) > 0 {
+		return false
+	}
+	for _, lock := range report.Locks {
+		if lock.Status == reviewtransaction.AuthorityLockAmbiguous {
+			return false
+		}
+	}
+	confined := false
+	for _, entry := range report.Entries {
+		switch entry.Status {
+		case reviewtransaction.AuthorityStatusInvalid:
+			if entry.Version != reviewtransaction.AuthorityVersionLegacy {
+				return false
+			}
+			confined = true
+		case reviewtransaction.AuthorityStatusReset, reviewtransaction.AuthorityStatusCollision:
+			return false
+		}
+	}
+	return confined
+}
+
 func reviewAuthorityCauseCategory(report reviewtransaction.AuthorityStatusReport, inventoryErr error) string {
 	if inventoryErr != nil || len(report.Diagnostics) > 0 {
 		return "inventory_io_or_layout"
@@ -1527,6 +1556,10 @@ func legacyExactFacadeGateLineages(ctx context.Context, repo string, input revie
 		}
 		receipt, parseErr := reviewtransaction.ParseReceipt(payload)
 		if parseErr != nil {
+			continue
+		}
+		authoritative, deriveErr := tx.Receipt()
+		if deriveErr != nil || !reflect.DeepEqual(receipt, authoritative) {
 			continue
 		}
 		evaluation := reviewtransaction.EvaluateNativeGate(ctx, repo, receipt, request)

@@ -277,7 +277,7 @@ func TestUnqualifiedGateDiscoveryRequiresSelectionForMultipleScopeChangedReceipt
 	}
 }
 
-func TestUnscopedGateDiscoveryFailsClosedOnMalformedUnrelatedInventory(t *testing.T) {
+func TestUnscopedGateDiscoveryToleratesCorruptedUnrelatedLegacyInventory(t *testing.T) {
 	repo := initReviewCLIRepo(t)
 	started, _ := approveDiscoveryMarkdown(t, repo, "review-discovery-valid", "docs/valid.md", "valid\n")
 	commonDir := filepath.Clean(string(bytes.TrimSpace([]byte(runReviewCLIGit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")))))
@@ -315,19 +315,170 @@ func TestUnscopedGateDiscoveryFailsClosedOnMalformedUnrelatedInventory(t *testin
 	}
 
 	var unscoped bytes.Buffer
-	err = RunReview([]string{
+	if err := RunReview([]string{
+		"validate", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
+		"--gate", string(reviewtransaction.GatePostApply),
+	}, &unscoped); err != nil {
+		t.Fatalf("unscoped discovery was poisoned by corrupted unrelated legacy inventory: %v\n%s", err, unscoped.String())
+	}
+	var result ReviewValidateResult
+	decodeStrictReviewJSON(t, decodeReviewOperationEnvelope(t, unscoped.Bytes()).Result, &result)
+	if !result.Allowed || result.Context.LineageID != started.LineageID {
+		t.Fatalf("unscoped discovery across corrupted legacy inventory = %#v", result)
+	}
+	if strings.Contains(unscoped.String(), broken) || strings.Contains(unscoped.String(), "not-a-revision") {
+		t.Fatalf("unscoped discovery exposed private payload: %s", unscoped.String())
+	}
+	brokenHead, err := os.ReadFile(filepath.Join(broken, "HEAD"))
+	if err != nil || string(brokenHead) != "not-a-revision\n" {
+		t.Fatalf("unscoped discovery mutated corrupted legacy inventory: %v", err)
+	}
+}
+
+func TestUnscopedGateDiscoveryExcludesTamperedLegacyReceiptFromCandidates(t *testing.T) {
+	repo := initReviewCLIRepo(t)
+	started, _ := approveDiscoveryMarkdown(t, repo, "review-discovery-valid", "docs/valid.md", "valid\n")
+	legacyStore, authoritative := approveLegacyDiscoveryChain(t, repo, "review-legacy-tampered")
+	tampered := authoritative
+	tampered.EvidenceHash = "sha256:" + strings.Repeat("ab", 32)
+	if tampered.EvidenceHash == authoritative.EvidenceHash {
+		tampered.EvidenceHash = "sha256:" + strings.Repeat("cd", 32)
+	}
+	receiptPath := filepath.Join(legacyStore.Dir, "artifacts", "receipt.json")
+	if err := reviewtransaction.WriteReceiptAtomic(receiptPath, tampered); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := reviewtransaction.InventoryAuthority(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatch := false
+	for _, entry := range report.Entries {
+		if entry.LineageID == "review-legacy-tampered" && entry.Version == reviewtransaction.AuthorityVersionLegacy &&
+			entry.Status == reviewtransaction.AuthorityStatusInvalid &&
+			reflect.DeepEqual(entry.Problems, []string{"legacy receipt does not match terminal authority"}) {
+			mismatch = true
+		}
+	}
+	if !mismatch {
+		t.Fatalf("fixture did not produce a receipt-mismatch legacy entry: %#v", report.Entries)
+	}
+
+	gateInput := reviewtransaction.NativeGateRequestInput{Gate: reviewtransaction.GatePostApply}
+	if exact := legacyExactFacadeGateLineages(context.Background(), repo, gateInput); exact != 0 {
+		t.Fatalf("tampered legacy receipt counted as exact gate candidate: %d", exact)
+	}
+
+	var unscoped bytes.Buffer
+	if err := RunReview([]string{
+		"validate", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
+		"--gate", string(reviewtransaction.GatePostApply),
+	}, &unscoped); err != nil {
+		t.Fatalf("unscoped discovery was poisoned by tampered legacy receipt: %v\n%s", err, unscoped.String())
+	}
+	var result ReviewValidateResult
+	decodeStrictReviewJSON(t, decodeReviewOperationEnvelope(t, unscoped.Bytes()).Result, &result)
+	if !result.Allowed || result.Context.LineageID != started.LineageID {
+		t.Fatalf("unscoped discovery across tampered legacy receipt = %#v", result)
+	}
+}
+
+func approveLegacyDiscoveryChain(t *testing.T, repo, lineage string) (reviewtransaction.Store, reviewtransaction.Receipt) {
+	t.Helper()
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.md")
+	ledgerPath := filepath.Join(dir, "ledger.json")
+	evidencePath := filepath.Join(dir, "evidence.txt")
+	if err := os.WriteFile(policyPath, []byte("legacy bounded policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := reviewtransaction.CanonicalLedger([]reviewtransaction.Finding{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ledgerPath, ledger, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidencePath, []byte("legacy verification passed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := (reviewtransaction.SnapshotBuilder{Repo: repo}).Build(context.Background(), reviewtransaction.Target{
+		Kind: reviewtransaction.TargetCurrentChanges, Projection: reviewtransaction.ProjectionWorkspace, IntendedUntracked: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyHash, _ := reviewtransaction.HashArtifact(policyPath)
+	ledgerHash, _ := reviewtransaction.HashLedgerArtifact(ledgerPath)
+	evidenceHash, _ := reviewtransaction.HashArtifact(evidencePath)
+	tx, err := reviewtransaction.NewTransaction(reviewtransaction.Start{
+		LineageID: lineage, Mode: reviewtransaction.ModeOrdinary4R, Generation: 1,
+		Snapshot: snapshot, PolicyHash: policyHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := reviewtransaction.AuthoritativeStore(context.Background(), repo, lineage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.StartReview(); err != nil {
+		t.Fatal(err)
+	}
+	head := appendLegacyCLIRecord(t, store, "", "review/start", *tx)
+	if err := tx.FreezeFindings([]reviewtransaction.Finding{}, ledger, ledgerHash); err != nil {
+		t.Fatal(err)
+	}
+	head = appendLegacyCLIRecord(t, store, head, "review/freeze-findings", *tx)
+	if _, err := tx.ClassifyEvidence([]reviewtransaction.FindingEvidence{}); err != nil {
+		t.Fatal(err)
+	}
+	head = appendLegacyCLIRecord(t, store, head, "review/classify-evidence", *tx)
+	if err := tx.BeginFinalVerification(); err != nil {
+		t.Fatal(err)
+	}
+	head = appendLegacyCLIRecord(t, store, head, "review/begin-final-verification", *tx)
+	if err := tx.CompleteFinalVerification(evidenceHash, true); err != nil {
+		t.Fatal(err)
+	}
+	appendLegacyCLIRecord(t, store, head, "review/complete-final-verification", *tx)
+	receipt, err := tx.Receipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reviewtransaction.WriteReceiptAtomic(filepath.Join(store.Dir, "artifacts", "receipt.json"), receipt); err != nil {
+		t.Fatal(err)
+	}
+	return store, receipt
+}
+
+func TestUnscopedGateDiscoveryFailsClosedOnCorruptedCompactLeaf(t *testing.T) {
+	repo := initReviewCLIRepo(t)
+	approveDiscoveryMarkdown(t, repo, "review-discovery-valid", "docs/valid.md", "valid\n")
+	commonDir := filepath.Clean(string(bytes.TrimSpace([]byte(runReviewCLIGit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")))))
+	broken := filepath.Join(commonDir, "gentle-ai", "review-transactions", "v2", "unrelated-broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "review-state.json"), []byte("{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var unscoped bytes.Buffer
+	err := RunReview([]string{
 		"validate", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
 		"--gate", string(reviewtransaction.GatePostApply),
 	}, &unscoped)
 	if err == nil {
-		t.Fatal("unscoped discovery ignored malformed unrelated inventory")
+		t.Fatal("unscoped discovery ignored corrupted compact leaf")
 	}
 	failure := decodeReviewIntegrationFailure(t, unscoped.Bytes())
 	if failure.Code != "authority_corrupted" || failure.AuthorityApplicability != "corrupted" || failure.CauseCategory != "record_or_graph_invalid" || failure.RetrySafe || failure.NextAction != "stop" {
-		t.Fatalf("corrupted inventory failure = %#v", failure)
+		t.Fatalf("corrupted compact leaf failure = %#v", failure)
 	}
-	if strings.Contains(unscoped.String(), broken) || strings.Contains(unscoped.String(), "not-a-revision") {
-		t.Fatalf("corrupted inventory failure exposed private payload: %s", unscoped.String())
+	if strings.Contains(unscoped.String(), broken) {
+		t.Fatalf("corrupted compact leaf failure exposed private payload: %s", unscoped.String())
 	}
 }
 
