@@ -39,6 +39,31 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# signs: signs the checksum file with minisign.
+#
+# Environment contract (see README "Release verification"):
+#   MINISIGN_SECRET_KEY_FILE  absolute path to an UNPROTECTED minisign
+#                             secret key file. Stock minisign prompts for a
+#                             passphrase on stdin; CI runners are non-interactive,
+#                             so the maintainer MUST generate this key with
+#                               minisign -G -W -p public.key -s secret.key
+#                             (the -W flag disables the passphrase).
+#   release.yml materializes the key from base64 into this path before GoReleaser runs.
+signs:
+  - cmd: minisign
+    artifacts: checksum
+    signature: ${artifact}.minisig
+    args:
+      - "-S"
+      - "-s"
+      - "{{ .Env.MINISIGN_SECRET_KEY_FILE }}"
+      - "-m"
+      - "{{ .ArtifactName }}"
+      - "-c"
+      - "gentle-ai {{ .Version }}"
+      - "-t"
+      - "signed by gentle-ai release"
+
 changelog:
   sort: asc
   filters:

@@ -22,6 +22,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install minisign
+        run: sudo apt-get install -y minisign
+
+      # Materialize the minisign secret key from the base64-encoded GitHub
+      # secret into a real key file on disk. GoReleaser's signs block expects
+      # MINISIGN_SECRET_KEY_FILE to point at an existing keyfile path,
+      # not the key contents (minisign reads -s <keyfile>, never stdin).
+      - name: Materialize minisign secret key
+        run: echo "$MINISIGN_SECRET_KEY_BASE64" | base64 -d > /tmp/minisign.key && chmod 600 /tmp/minisign.key
+        env:
+          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89  # v7.2.2
         with:
@@ -30,3 +42,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
+          MINISIGN_SECRET_KEY_FILE: /tmp/minisign.key

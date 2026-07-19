@@ -161,6 +161,38 @@ $env:GENTLE_AI_CHANNEL="beta"; irm https://raw.githubusercontent.com/Gentleman-P
    gentle-ai sync
    ```
 
+### Release verification
+
+Release artifacts are signed with [minisign](https://jedisct1.github.io/minisign/). The built-in upgrader (`gentle-ai upgrade`) verifies each artifact's signature against the public key before replacing the installed binary.
+
+The ed25519 public key is bundled with the binary as the `MinisignPublicKey` constant in `internal/update/upgrade/download.go`. The current hex value is:
+
+```
+0000000000000000000000000000000000000000000000000000000000000000
+```
+
+> **Note:** The key above is a placeholder. The maintainer replaces it with the real gentle-ai release key before the first signed release. Until then, releases are unsigned and signature verification is skipped.
+
+#### Maintainer notes — CI signing flow
+
+The release workflow (`/.github/workflows/release.yml`) decodes the base64-encoded `MINISIGN_SECRET_KEY_BASE64` GitHub secret into the runner path `/tmp/minisign.key`, then exports `MINISIGN_SECRET_KEY_FILE=/tmp/minisign.key` for GoReleaser. GoReleaser's `signs:` block (see `/.goreleaser.yaml`) invokes stock `minisign -S -s <keyfile> -m <checksum> -c "gentle-ai <version>" -t "signed by gentle-ai release"`, producing `checksums.txt.minisig` next to `checksums.txt`.
+
+Because the GitHub Actions runner is non-interactive, the secret key MUST be generated **without a passphrase**:
+
+```bash
+minisign -G -W -p gentle-ai-release.pub -s gentle-ai-release.key
+```
+
+Then base64-encode the secret key once and store it as the `MINISIGN_SECRET_KEY_BASE64` repository / organization secret. The corresponding `gentle-ai-release.pub` is the key users verify against.
+
+To verify an artifact manually out-of-band, after downloading `checksums.txt` and `checksums.txt.minisig` from the release page:
+
+```bash
+minisign -Vm checksums.txt -p gentle-ai-release.pub
+```
+
+The standalone public key file (`gentle-ai-release.pub`) is published alongside each release's notes once the first signed release ships.
+
 ### Review a focused staged candidate
 
 For a monorepo or shared worktree, explicitly review exactly what is in the Git index:

@@ -4,8 +4,11 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -286,4 +289,118 @@ func atomicReplace(src, dst string) error {
 		return fmt.Errorf("rename %s -> %s: %w", src, dst, err)
 	}
 	return nil
+}
+
+// --- Release signature verification (slice A: helper only) ---
+
+// MinisignPublicKey is the ed25519 public key (hex) used to verify signed
+// release artifacts. It must be exactly 64 hex characters (32 bytes).
+//
+// The value below is a placeholder. The maintainer replaces it with the real
+// gentle-ai release key before the first signed release ships.
+var MinisignPublicKey = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// MinisignGraceCutoffVersion is the release version at and above which an
+// artifact MUST be signed. Releases at or after this version fail the install
+// if they are not signed or the signature does not verify.
+//
+// Releases strictly before this version are tolerated as unsigned (grace window
+// for already-published artifacts).
+var MinisignGraceCutoffVersion = "v1.23.0"
+
+// Sentinel errors emitted by release signature verification.
+var (
+	// ErrSignatureVerificationFailed: the signature was present and parsed
+	// successfully, but ed25519.Verify rejected it against MinisignPublicKey.
+	ErrSignatureVerificationFailed = errors.New("signature verification failed")
+
+	// ErrSignatureMissing: the release artifacts are at or after
+	// MinisignGraceCutoffVersion, but no .minisig file is published alongside
+	// them. Install must fail closed.
+	ErrSignatureMissing = errors.New("signature file missing")
+
+	// ErrSignatureFetchFailed: the .minisig file URL was unreachable or
+	// returned non-200. Treated as a hard failure during the grace window
+	// to preserve fail-closed semantics.
+	ErrSignatureFetchFailed = errors.New("signature file could not be fetched")
+
+	// ErrSignatureBlobMalformed: the .minisig content cannot be parsed
+	// (wrong line count, bad prefix, bad base64, wrong decoded length, or
+	// the hex key embedded in the constant is itself malformed).
+	ErrSignatureBlobMalformed = errors.New("signature blob malformed")
+)
+
+// parseMinisign parses a minisign-format .minisig blob into an ed25519 public
+// key. It also decodes the caller-supplied hexPubKey to validate the caller's
+// input; the returned key is the one embedded in line 4 of the minisig file.
+//
+// A minisig file has exactly 4 lines:
+//
+//	line 1: "untrusted comment: <free text>"
+//	line 2: base64(2-byte signum || 8-byte keynum || 64-byte ed25519 signature)
+//	line 3: "trusted comment: <free text>"
+//	line 4: base64(2-byte signum || 8-byte keynum || 32-byte ed25519 public key)
+//
+// The function does NOT call ed25519.Verify — that is the caller's job in
+// the wired flow (slice B). This helper exists purely to surface malformed
+// blobs cheaply before any signature math runs.
+//
+// Returns ErrSignatureBlobMalformed (wrapped with details) for any structural
+// problem: wrong line count, unexpected prefix, invalid base64, hex key
+// invalid, or unexpected decoded length.
+func parseMinisign(hexPubKey string, minisigBlob []byte) (ed25519.PublicKey, error) {
+	// Decode and validate the caller's hex-encoded public key. This
+	// guarantees the caller's constant is at least well-formed before any
+	// downstream signature verification runs.
+	rawKey, err := hex.DecodeString(hexPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid hex public key: %v", ErrSignatureBlobMalformed, err)
+	}
+	if len(rawKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%w: hex public key length: got %d, want %d",
+			ErrSignatureBlobMalformed, len(rawKey), ed25519.PublicKeySize)
+	}
+
+	// Split the .minisig content into exactly 4 lines. Allow a single
+	// trailing CR/LF/CRLF, but no other stray whitespace.
+	text := strings.TrimRight(string(minisigBlob), "\r\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) != 4 {
+		return nil, fmt.Errorf("%w: expected 4 lines, got %d",
+			ErrSignatureBlobMalformed, len(lines))
+	}
+
+	if !strings.HasPrefix(lines[0], "untrusted comment: ") {
+		return nil, fmt.Errorf("%w: line 1 must start with %q",
+			ErrSignatureBlobMalformed, "untrusted comment: ")
+	}
+	if !strings.HasPrefix(lines[2], "trusted comment: ") {
+		return nil, fmt.Errorf("%w: line 3 must start with %q",
+			ErrSignatureBlobMalformed, "trusted comment: ")
+	}
+
+	// Line 2: signature blob = 2 signum + 8 keynum + 64 signature bytes = 74 bytes.
+	const sigLineLen = 2 + 8 + ed25519.SignatureSize
+	sigBin, err := base64.StdEncoding.DecodeString(lines[1])
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid signature base64: %v", ErrSignatureBlobMalformed, err)
+	}
+	if len(sigBin) != sigLineLen {
+		return nil, fmt.Errorf("%w: signature line decoded length: got %d, want %d",
+			ErrSignatureBlobMalformed, len(sigBin), sigLineLen)
+	}
+
+	// Line 4: key blob = 2 signum + 8 keynum + 32 pubkey bytes = 42 bytes.
+	const keyLineLen = 2 + 8 + ed25519.PublicKeySize
+	keyBin, err := base64.StdEncoding.DecodeString(lines[3])
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid pubkey base64: %v", ErrSignatureBlobMalformed, err)
+	}
+	if len(keyBin) != keyLineLen {
+		return nil, fmt.Errorf("%w: pubkey line decoded length: got %d, want %d",
+			ErrSignatureBlobMalformed, len(keyBin), keyLineLen)
+	}
+
+	// Skip the 10-byte header (signum + keynum) and return the 32-byte key.
+	return ed25519.PublicKey(keyBin[10:]), nil
 }
