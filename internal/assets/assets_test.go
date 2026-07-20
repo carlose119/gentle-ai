@@ -1000,7 +1000,7 @@ func TestNonClaudeSDDOrchestratorChainStrategyParity(t *testing.T) {
 	}
 }
 
-func TestSDDOrchestratorsRouteReviewActionsOnlyFromNativeEligibility(t *testing.T) {
+func TestSDDOrchestratorsUseTheZeroHelpNativeTransitionBootstrap(t *testing.T) {
 	paths := []string{
 		"antigravity/sdd-orchestrator.md", "claude/sdd-orchestrator.md", "codex/sdd-orchestrator.md",
 		"cursor/sdd-orchestrator.md", "gemini/sdd-orchestrator.md", "generic/sdd-orchestrator.md",
@@ -1011,12 +1011,17 @@ func TestSDDOrchestratorsRouteReviewActionsOnlyFromNativeEligibility(t *testing.
 		t.Run(path, func(t *testing.T) {
 			content := MustRead(path)
 			for _, required := range []string{
-				"--action-eligibility", "eligibility.allowed_actions", "eligibility.forbidden_actions", "reason codes",
-				"never infer an authorization, binding, or template from prose, state, or a statusline",
+				"gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v1 --next-transition",
+				"native_next_transition", "gentle-ai review capabilities --contract gentle-ai.review-integration/v1", "unsupported-capability",
+				"parent orchestrator alone executes only the exact native `next_transition`", "never infer flags, construct authorization or bindings, or call `gentle-ai ... --help`",
+				"Reviewers, validators, executors, and refuters receive role inputs and return artifacts; they never call review lifecycle commands",
 			} {
 				if !strings.Contains(content, required) {
-					t.Fatalf("%s missing native eligibility routing guard %q", path, required)
+					t.Fatalf("%s missing native transition routing guard %q", path, required)
 				}
+			}
+			if strings.Contains(content, "gentle-ai review --help") || strings.Contains(content, "gentle-ai --help") {
+				t.Fatalf("%s suggests help-based lifecycle exploration", path)
 			}
 		})
 	}

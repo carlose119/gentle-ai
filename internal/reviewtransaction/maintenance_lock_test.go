@@ -79,6 +79,30 @@ func TestMaintenanceLockRejectsSymlinksAndStaleBytesAreNotOwnership(t *testing.T
 	}
 }
 
+func TestEnsureMaintenanceLockPathRejectsRelativePaths(t *testing.T) {
+	for _, path := range []string{
+		"MAINTENANCE.lock",
+		"review-transactions/MAINTENANCE.lock",
+		"./review-transactions/MAINTENANCE.lock",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if err := ensureMaintenanceLockPath(path); err == nil {
+				t.Fatal("relative maintenance lock path was accepted")
+			}
+		})
+	}
+}
+
+func TestEnsureMaintenanceLockPathAcceptsCanonicalAbsolutePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gentle-ai", "REVIEW-MAINTENANCE.lock")
+	if err := ensureMaintenanceLockPath(path); err != nil {
+		t.Fatalf("canonical absolute maintenance lock path was rejected: %v", err)
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		t.Fatalf("maintenance lock directory = %v, %v", info, err)
+	}
+}
+
 func TestMaintenanceLockHonorsCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "MAINTENANCE.lock")
 	held, err := acquireMaintenanceLock(context.Background(), path, maintenanceExclusive)

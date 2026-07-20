@@ -86,14 +86,17 @@ func joinIDs[T ~string](values []T) string {
 }
 
 func reviewPersonaLabel(persona model.PersonaID) string {
-	switch persona {
-	case model.PersonaCustom:
+	if persona == model.PersonaCustom {
 		return "keep existing persona unmanaged"
-	case model.PersonaGentlemanNeutralArtifacts:
-		return "Gentleman conversation, neutral artifacts"
-	default:
-		return string(persona)
 	}
+	// Keep the persona ID visible: this is the confirm-before-write screen, so
+	// the reader must be able to see the exact value that lands in state.json,
+	// not only its prose description. The two Gentleman variants differ solely
+	// by the "(legacy alias)" suffix, which is too easy to miss on its own.
+	if description, ok := personaDescriptions[persona]; ok {
+		return string(persona) + " — " + description
+	}
+	return string(persona)
 }
 
 func reviewPresetLabel(preset model.PresetID) string {

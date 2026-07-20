@@ -131,6 +131,11 @@ func TestReviewCapabilitiesAdvertisesOnlyNativeSurface(t *testing.T) {
 	if !slices.Contains(result.Schemas, reviewResultArtifactSchema) || !slices.Contains(result.Schemas, ReviewIntegrationOperationSchema) || !slices.Contains(result.Schemas, ReviewIntegrationStartSchema) || !slices.Contains(result.Schemas, ReviewIntegrationStatusSchema) || !slices.Contains(result.Schemas, ReviewIntegrationProjectionSchema) {
 		t.Fatalf("capability schemas do not advertise negotiated operations/START/status/projection: %v", result.Schemas)
 	}
+	if result.Bootstrap == nil || result.Bootstrap.Command != "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v1 --next-transition" ||
+		result.Bootstrap.RequiredFeature != "native_next_transition" || result.Bootstrap.UnsupportedOutcome != "unsupported-capability" || !result.Bootstrap.ParentOnly ||
+		len(result.Bootstrap.TargetSelectorVariants) != 4 {
+		t.Fatalf("capability bootstrap = %#v", result.Bootstrap)
+	}
 	if slices.Contains(result.Operations, "review.capture_result") {
 		t.Fatal("headless capture-result was advertised as a negotiated repository operation")
 	}
@@ -338,6 +343,7 @@ func TestReviewCapabilitiesFeatureRequirementsAreExplicit(t *testing.T) {
 		{Name: "bounded_process_waits", Supported: true, Requires: []string{"uniform_failure_envelope"}},
 		{Name: "exact_gate_receipt_discovery", Supported: true, Requires: []string{"five_delivery_gates"}},
 		{Name: "native_low_risk_verification", Supported: true, Requires: []string{"compact_v2_authority"}},
+		{Name: "native_next_transition", Supported: true, Requires: []string{"target_scoped_status"}},
 		{Name: "risk_reasons", Supported: true, Requires: []string{"repository_independent_capabilities"}},
 		{Name: "scope_change_diagnostics", Supported: true, Requires: []string{"uniform_failure_envelope"}},
 	}
@@ -350,6 +356,23 @@ func TestReviewCapabilitiesFeatureRequirementsAreExplicit(t *testing.T) {
 	result.Features.Optional = result.Features.Optional[3:4]
 	if err := result.Validate(); err == nil {
 		t.Fatal("capabilities accepted an incomplete optional feature surface")
+	}
+}
+
+func TestReviewCapabilitiesBootstrapIsOptionalForExistingV1Consumers(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "gentle-ai-fixture")
+	if err := os.WriteFile(executable, []byte(capabilityFixtureExecutable), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	restore := stubReviewCapabilityIdentity(t, executable)
+	defer restore()
+	legacy, err := buildReviewCapabilities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Bootstrap = nil
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("existing v1 capability surface rejected: %v", err)
 	}
 }
 

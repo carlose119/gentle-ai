@@ -84,5 +84,40 @@
         "reason_code": "forbidden_required_inputs_unavailable"
       }
     ]
+  },
+  "next_transition": {
+    "kind": "collect",
+    "reason_code": "reviewer_results_required",
+    "collect": {
+      "inputs": [
+        {
+          "name": "reviewer_result",
+          "schema": "https://gentle-ai.dev/schema/review/reviewer/v1",
+          "capture_operation": "review.capture-result",
+          "arguments": [
+            {
+              "name": "lineage",
+              "value": "review-status-fixture"
+            },
+            {
+              "name": "expected-revision",
+              "value": "sha256:81cdad8f3182d4919147d3c4fe8f614814068e5ef68417e3dcbd5e326dd3e390"
+            },
+            {
+              "name": "target",
+              "value": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6"
+            },
+            {
+              "name": "lens",
+              "value": "review-reliability"
+            },
+            {
+              "name": "order",
+              "value": "0"
+            }
+          ]
+        }
+      ]
+    }
   }
 }
