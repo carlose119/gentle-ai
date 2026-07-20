@@ -42,11 +42,11 @@ type ReviewTargetStatusResult struct {
 	Candidates        []string                              `json:"candidates"`
 	Reconciliation    *ReviewFinalizeReconciliation         `json:"reconciliation,omitempty"`
 	Eligibility       *ReviewActionEligibility              `json:"eligibility,omitempty"`
+	NextTransition    *ReviewNextTransition                 `json:"next_transition,omitempty"`
 }
 
-// ReviewActionEligibility is the only machine-readable source for routing a
-// review lifecycle action. Consumers must not infer a command or authorization
-// binding from Action, State, or prose.
+// ReviewActionEligibility remains an additive compatibility detail for older
+// consumers. A negotiated next_transition is the sole routing authority.
 type ReviewActionEligibility struct {
 	AllowedActions   []ReviewEligibleAction  `json:"allowed_actions"`
 	ForbiddenActions []ReviewForbiddenAction `json:"forbidden_actions"`
@@ -262,6 +262,11 @@ func (result ReviewTargetStatusResult) Validate() error {
 			return err
 		}
 	}
+	if result.NextTransition != nil {
+		if err := result.NextTransition.Validate(); err != nil {
+			return err
+		}
+	}
 	switch result.Applicability {
 	case reviewtransaction.TargetApplicabilityCurrent:
 		if result.Authority == nil || result.Authority.Generation < 1 ||
@@ -342,6 +347,52 @@ func (result ReviewTargetStatusResult) Validate() error {
 		}
 	default:
 		return errors.New("unsupported review status recovery disposition")
+	}
+	return nil
+}
+
+func (transition ReviewNextTransition) Validate() error {
+	if strings.TrimSpace(transition.ReasonCode) == "" {
+		return errors.New("review next transition requires a reason code")
+	}
+	switch transition.Kind {
+	case reviewNextTransitionStop:
+		if transition.Execute != nil || transition.Collect != nil {
+			return errors.New("stop transition contains routing data")
+		}
+	case reviewNextTransitionCollect:
+		if transition.Execute != nil || transition.Collect == nil || len(transition.Collect.Inputs) == 0 {
+			return errors.New("collection transition is incomplete")
+		}
+		for _, input := range transition.Collect.Inputs {
+			if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Schema) == "" || strings.TrimSpace(input.CaptureOperation) == "" || len(input.Arguments) == 0 {
+				return errors.New("collection transition has an incomplete input")
+			}
+			for _, argument := range input.Arguments {
+				if strings.TrimSpace(argument.Name) == "" || strings.TrimSpace(argument.Value) == "" {
+					return errors.New("collection transition has an incomplete argument")
+				}
+			}
+		}
+	case reviewNextTransitionExecute:
+		if transition.Collect != nil || transition.Execute == nil || transition.Execute.Arguments == nil || len(transition.Execute.Preconditions) == 0 || !validReviewCapabilitySHA256(transition.Execute.Binding.TargetIdentity) {
+			return errors.New("execution transition is incomplete")
+		}
+		if transition.Execute.Operation != "review.start" && transition.Execute.Operation != "review.finalize" && transition.Execute.Operation != "review.recover" && transition.Execute.Operation != "review.validate" || transition.Execute.Operation != "review.start" && (strings.TrimSpace(transition.Execute.Binding.LineageID) == "" || !validReviewCapabilitySHA256(transition.Execute.Binding.Revision)) {
+			return errors.New("execution transition operation or binding is invalid")
+		}
+		for _, argument := range transition.Execute.Arguments {
+			if strings.TrimSpace(argument.Name) == "" || strings.TrimSpace(argument.Value) == "" {
+				return errors.New("execution transition has an incomplete argument")
+			}
+		}
+		for _, precondition := range transition.Execute.Preconditions {
+			if strings.TrimSpace(precondition.Name) == "" || strings.TrimSpace(precondition.Value) == "" {
+				return errors.New("execution transition has an incomplete precondition")
+			}
+		}
+	default:
+		return errors.New("unsupported review next transition kind")
 	}
 	return nil
 }

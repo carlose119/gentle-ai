@@ -54,7 +54,7 @@ func TestNegotiatedReviewStatusReportsFreshStartAndPreservesGlobalStatus(t *test
 		t.Fatalf("unnegotiated status fields = %v, want %v\n%s", gotGlobalFields, wantGlobalFields, global.String())
 	}
 
-	args := []string{"status", "--contract", ReviewIntegrationContractV1, "--action-eligibility", "--cwd", repo}
+	args := []string{"status", "--contract", ReviewIntegrationContractV1, "--action-eligibility", "--next-transition", "--cwd", repo}
 	var first, second bytes.Buffer
 	if err := RunReview(args, &first); err != nil {
 		t.Fatal(err)
@@ -352,7 +352,7 @@ func TestNegotiatedReviewFinalizeEligibilityRequiresTargetScopedStatus(t *testin
 	} {
 		t.Run(string(state), func(t *testing.T) {
 			var output bytes.Buffer
-			if err := encodeCompactFacadeFinalize(&output, true, true, reviewtransaction.CompactState{LineageID: "review-finalize-eligibility", State: state}, "sha256:"+strings.Repeat("a", 64), reviewtransaction.CompactStore{}, "finalize"); err != nil {
+			if err := encodeCompactFacadeFinalize(&output, true, true, false, reviewtransaction.CompactState{LineageID: "review-finalize-eligibility", State: state}, "sha256:"+strings.Repeat("a", 64), reviewtransaction.CompactStore{}, "finalize"); err != nil {
 				t.Fatal(err)
 			}
 			var result ReviewIntegrationFinalizeResult

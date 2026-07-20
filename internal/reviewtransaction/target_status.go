@@ -80,6 +80,7 @@ type TargetStatusResult struct {
 	OriginalChangedLines int                    `json:"original_changed_lines,omitempty"`
 	Tier                 RiskLevel              `json:"tier,omitempty"`
 	CorrectionBudget     int                    `json:"correction_budget,omitempty"`
+	SelectedLenses       []string               `json:"selected_lenses,omitempty"`
 	TargetIdentity       string                 `json:"target_identity"`
 	Projection           TargetProjectionStatus `json:"projection"`
 	CandidateLineageIDs  []string               `json:"candidate_lineage_ids"`
@@ -313,6 +314,7 @@ func targetStatusForCandidate(result TargetStatusResult, candidate targetStatusC
 		state := record.State
 		result.State, result.Generation, result.Revision = state.State, state.Generation, record.Revision
 		result.OriginalChangedLines, result.Tier, result.CorrectionBudget = state.OriginalChangedLines, state.RiskLevel, state.CorrectionBudget
+		result.SelectedLenses = append([]string{}, state.SelectedLenses...)
 		result.Projection = targetProjectionFromCompact(state, result.Projection)
 		result.ReceiptIdentity = candidate.receiptIdentity
 		if candidate.pendingFinalize {

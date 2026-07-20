@@ -43,6 +43,7 @@ type ReviewCapabilitiesResult struct {
 	Projections   []string                        `json:"projections"`
 	Schemas       []string                        `json:"schemas"`
 	Features      ReviewCapabilitiesFeatures      `json:"features"`
+	Bootstrap     *ReviewCapabilitiesBootstrap    `json:"bootstrap,omitempty"`
 	Compatibility ReviewCapabilitiesCompatibility `json:"compatibility"`
 }
 
@@ -82,6 +83,21 @@ type ReviewCapabilityFeature struct {
 type ReviewCapabilitiesFeatures struct {
 	Mandatory []ReviewCapabilityFeature `json:"mandatory"`
 	Optional  []ReviewCapabilityFeature `json:"optional"`
+}
+
+// ReviewCapabilitiesBootstrap is optional capability metadata. Consumers that
+// do not understand it retain the existing v1 capability surface.
+type ReviewCapabilitiesBootstrap struct {
+	Command                string                             `json:"command"`
+	TargetSelectorVariants []ReviewCapabilitiesTargetSelector `json:"target_selector_variants"`
+	RequiredFeature        string                             `json:"required_feature"`
+	UnsupportedOutcome     string                             `json:"unsupported_outcome"`
+	ParentOnly             bool                               `json:"parent_only"`
+}
+
+type ReviewCapabilitiesTargetSelector struct {
+	TargetType string   `json:"target_type"`
+	Arguments  []string `json:"arguments"`
 }
 
 type ReviewCapabilitiesCompatibility struct {
@@ -204,9 +220,20 @@ func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 				{Name: "bounded_process_waits", Supported: true, Requires: []string{"uniform_failure_envelope"}},
 				{Name: "exact_gate_receipt_discovery", Supported: true, Requires: []string{"five_delivery_gates"}},
 				{Name: "native_low_risk_verification", Supported: true, Requires: []string{"compact_v2_authority"}},
+				{Name: "native_next_transition", Supported: true, Requires: []string{"target_scoped_status"}},
 				{Name: "risk_reasons", Supported: true, Requires: []string{"repository_independent_capabilities"}},
 				{Name: "scope_change_diagnostics", Supported: true, Requires: []string{"uniform_failure_envelope"}},
 			},
+		},
+		Bootstrap: &ReviewCapabilitiesBootstrap{
+			Command: "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v1 --next-transition",
+			TargetSelectorVariants: []ReviewCapabilitiesTargetSelector{
+				{TargetType: "staged", Arguments: []string{"--projection", "staged"}},
+				{TargetType: "base_ref", Arguments: []string{"--base-ref", "<ref>"}},
+				{TargetType: "workspace_overlay_base_ref", Arguments: []string{"--workspace-overlay", "--base-ref", "<ref>"}},
+				{TargetType: "workspace_overlay_base_tree", Arguments: []string{"--workspace-overlay", "--base-tree", "<tree>"}},
+			},
+			RequiredFeature: "native_next_transition", UnsupportedOutcome: "unsupported-capability", ParentOnly: true,
 		},
 		Compatibility: ReviewCapabilitiesCompatibility{
 			MinimumProtocolMajor: 1, MaximumProtocolMajor: 1,
@@ -302,6 +329,9 @@ func (result ReviewCapabilitiesResult) Validate() error {
 		!reflect.DeepEqual(result.Projections, static.Projections) || !reflect.DeepEqual(result.Schemas, static.Schemas) ||
 		!reflect.DeepEqual(result.Features.Mandatory, static.Features.Mandatory) || !reflect.DeepEqual(result.Features.Optional, static.Features.Optional) || !reflect.DeepEqual(result.Compatibility, static.Compatibility) {
 		return errors.New("capability surface does not match the negotiated v1 contract")
+	}
+	if result.Bootstrap != nil && !reflect.DeepEqual(result.Bootstrap, static.Bootstrap) {
+		return errors.New("capability bootstrap does not match the negotiated v1 contract")
 	}
 	if result.Package.Name != "gentle-ai" || strings.TrimSpace(result.Package.Version) == "" || result.Package.ReleaseChannel != reviewReleaseChannel(result.Package.Version) {
 		return errors.New("capability package identity is invalid")
