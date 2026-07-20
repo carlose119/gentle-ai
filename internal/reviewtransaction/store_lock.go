@@ -38,8 +38,10 @@ type storeLock struct {
 	maintenance *MaintenanceLock
 }
 
-// MaintenanceLock is an advisory exclusive authority-maintenance lease.
-// Callers must supply a bounded context and always Release the lease.
+// MaintenanceLock is an advisory authority-maintenance lease. It may be shared
+// by review writers or exclusive for approved maintenance. Acquisition is
+// bounded by maintenanceLockTimeout, including context.Background callers.
+// Callers must always Release the lease.
 type MaintenanceLock struct{ lock *storeLock }
 
 func (lock *MaintenanceLock) Release() error {
@@ -206,6 +208,9 @@ func AcquireReviewMaintenanceExclusive(ctx context.Context, repo string) (*Maint
 }
 
 func ensureMaintenanceLockPath(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("maintenance lock path %q must be absolute", path)
+	}
 	root := filepath.Dir(path)
 	for current := root; ; current = filepath.Dir(current) {
 		info, err := os.Lstat(current)
