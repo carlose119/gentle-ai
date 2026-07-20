@@ -110,7 +110,7 @@ func acquireLocalStoreLock(path string) (*storeLock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := secureOpenLocalStoreLock(path)
 	if err != nil {
 		return nil, err
 	}
