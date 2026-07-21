@@ -425,8 +425,10 @@ func TestValidateReviewerResultPayloadDistinguishesErrorCodes(t *testing.T) {
 func TestReviewCaptureResultRejectsEmptyPayload(t *testing.T) {
 	repo, started, _, record := newArtifactReview(t, false)
 	input := filepath.Join(t.TempDir(), "result.json")
+	acquisitionID := acquireResultForTest(t, repo, started.LineageID, record.State.InitialSnapshot.Identity, record.State.SelectedLenses[0], 0)
 	validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
-		record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input,
+		"--acquisition", acquisitionID}
 
 	for _, payload := range []string{"", "   ", "\n\t"} {
 		if err := os.WriteFile(input, []byte(payload), 0o600); err != nil {
@@ -445,8 +447,10 @@ func TestReviewCaptureResultRejectsEmptyPayload(t *testing.T) {
 func TestReviewCaptureResultRejectsNestedEnvelope(t *testing.T) {
 	repo, started, _, record := newArtifactReview(t, false)
 	input := filepath.Join(t.TempDir(), "result.json")
+	acquisitionID := acquireResultForTest(t, repo, started.LineageID, record.State.InitialSnapshot.Identity, record.State.SelectedLenses[0], 0)
 	validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
-		record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input,
+		"--acquisition", acquisitionID}
 
 	payload := "<task_result>\n{\"findings\":[],\"evidence\":[\"checked\"]}\n</task_result>"
 	if err := os.WriteFile(input, []byte(payload), 0o600); err != nil {
