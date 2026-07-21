@@ -786,6 +786,19 @@ func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 		schema["$id"] != ReviewIntegrationStartSchemaID || schema["additionalProperties"] != false {
 		t.Fatalf("START schema header = %#v", schema)
 	}
+	properties := schema["properties"].(map[string]any)
+	if properties["candidate_diff"] == nil || properties["changed_path_manifest"] == nil || schema["allOf"] == nil {
+		t.Fatalf("START schema does not declare conditional frozen context: %#v", schema)
+	}
+	dependencies := schema["dependentRequired"].(map[string]any)
+	if !reflect.DeepEqual(dependencies["candidate_diff"], []any{"changed_path_manifest"}) ||
+		!reflect.DeepEqual(dependencies["changed_path_manifest"], []any{"candidate_diff"}) {
+		t.Fatalf("START schema does not require frozen context fields as a pair: %#v", dependencies)
+	}
+	candidateDiffSchema := properties["candidate_diff"].(map[string]any)
+	if candidateDiffSchema["$ref"] != "#/$defs/frozen_candidate_diff" {
+		t.Fatalf("START candidate_diff schema = %#v", candidateDiffSchema)
+	}
 	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "start.fixture.json"))
 	if err != nil {
 		t.Fatal(err)

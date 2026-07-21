@@ -29,13 +29,20 @@ result_path = pathlib.Path(sys.argv[1])
 outside = pathlib.Path(sys.argv[2])
 document = json.loads(result_path.read_text(encoding="utf-8"))
 
-assert document["schema"] == "gentle-ai.review-integration.capabilities/v1"
+assert document["schema"] == "gentle-ai.review-integration.capabilities/v1.2"
 assert document["contract"] == "gentle-ai.review-integration/v1"
+assert document["protocol"] == {"major": 1, "minor": 2}
 assert document["gates"] == ["post-apply", "pre-commit", "pre-push", "pre-pr", "release"]
 assert document["projections"] == ["staged", "workspace"]
 assert document["executable"]["evidence"] == "self-reported"
 assert document["executable"]["verification"] == "compare-with-published-manifest"
 assert re.fullmatch(r"sha256:[0-9a-f]{64}", document["executable"]["sha256"])
+features = {feature["name"]: feature for feature in document["features"]["optional"]}
+assert features["native_frozen_candidate_context"] == {
+    "name": "native_frozen_candidate_context",
+    "supported": True,
+    "requires": ["immutable_snapshot"],
+}
 assert list(outside.iterdir()) == []
 
 def keys(value):

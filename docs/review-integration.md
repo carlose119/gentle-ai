@@ -15,7 +15,9 @@ gentle-ai review capabilities \
 
 The response identifies the protocol major, package and build identity, executable SHA-256, operations, five gates, projections, schemas, mandatory and optional features, and compatibility window. The executable digest is self-reported evidence; compare it with the published release manifest before trusting the binary.
 
-Protocol v1.1 advertises the distinct `gentle-ai.review-integration.capabilities/v1.1` schema and additive optional features for `base_ref_workspace_overlay`, `bounded_process_waits`, `exact_gate_receipt_discovery`, `native_low_risk_verification`, `native_next_transition`, `risk_reasons`, and `scope_change_diagnostics`. Protocol v1.0 artifacts remain available under `gentle-ai.review-integration.capabilities/v1`; old consumers must reject the unknown v1.1 identity, and new consumers must require protocol 1.1 and validate its schema before using overlay. The overlay feature requires immutable snapshots and restart-safe projection.
+Protocol v1.2 advertises the distinct `gentle-ai.review-integration.capabilities/v1.2` schema and the additive optional feature `native_frozen_candidate_context`. That feature requires immutable snapshots and tells consumers, before START creates authority, that selected lenses will receive the frozen `candidate_diff` and typed `changed_path_manifest`. Protocol v1.0 and v1.1 schemas and fixtures remain packaged unchanged. Consumers must reject an unknown schema/minor identity they do not support; v1.2 consumers validate the v1.2 schema before relying on frozen context.
+
+The v1.1 artifact remains the compatibility record for `base_ref_workspace_overlay`, `bounded_process_waits`, `exact_gate_receipt_discovery`, `native_low_risk_verification`, `native_next_transition`, `risk_reasons`, and `scope_change_diagnostics`. The overlay feature requires immutable snapshots and restart-safe projection.
 
 Consumers MUST reject an incompatible protocol major, an unsupported mandatory feature, an unknown mandatory enum, or a schema identity mismatch. Unknown optional fields may be ignored only under the advertised additive-minor policy. Existing unnegotiated CLI responses remain separate compatibility surfaces and do not gain negotiated fields silently.
 
@@ -57,7 +59,7 @@ Consumers MUST NOT reconstruct receipts, derive canonical hashes, inspect the Gi
 | Operation | Mutation boundary | Contract behavior |
 | --- | --- | --- |
 | `review.capabilities` | None | Reports the deterministic repository-independent provider surface. |
-| `review.start` | Compact authority | Freezes one target, tier, lens set, and correction budget; it never starts because a gate was invoked. |
+| `review.start` | Compact authority | Freezes one target, tier, lens set, and correction budget; negotiated selected-lens responses also return context derived from that exact authority. It never starts because a gate was invoked. |
 | `review.status` | None | Reconstructs target-scoped applicability, projection, lifecycle, and one next action. |
 | `review.finalize` | Compact authority and derived receipt | Accepts selected lens results and bounded correction evidence, performs deterministic native verification for an eligible low-risk zero-lens target, or performs an exact receipt-publication replay. |
 | `review.validate` | None | Revalidates one existing content-bound receipt at a named lifecycle gate. |
@@ -76,6 +78,33 @@ Consumers MUST NOT reconstruct receipts, derive canonical hashes, inspect the Gi
 | `review start --base-ref <ref> --workspace-overlay` | `<ref>` to the synthetic workspace tree, including branch commits and staged, unstaged, and intended-untracked bytes. |
 
 Overlay mode requires workspace projection and cannot be combined with `--committed-only`. START returns `target_mode`, `target_identity`, `base_tree`, and `candidate_tree` only for this mode. Restarted consumers select the frozen target with `review status --base-tree <START base_tree> --workspace-overlay`; `--base-ref` remains available for a fresh symbolic selection, but cannot be combined with `--base-tree`. Existing workspace-only and committed-only payloads remain unchanged. Snapshot construction uses a temporary index and does not mutate the real index or worktree.
+
+### Use frozen reviewer context
+
+When negotiated START returns one or more selected lenses, it also returns both `candidate_diff` and `changed_path_manifest`. The provider derives them from the selected authority's persisted initial base/candidate trees and canonical paths—not from the current index, worktree, or a correction snapshot. Created, resumed, receipt-replay, blocked, and recovery-selected responses therefore retain the same bytes across process restarts and unrelated workspace mutation.
+
+The patch uses fixed binary/full-index, prefix, context, algorithm, rename, external-diff, text-conversion, submodule, color, and locale behavior. Rendering and START diff statistics run through a temporary bare Git view backed only by the repository object database, with repository, info, global, system, worktree, and committed `.gitattributes` sources excluded. Attribute state therefore cannot reinterpret frozen bytes or risk counts between retries. The raw patch is capped at 4 MiB while Git output is captured, matching the native reviewer-artifact ceiling and bounding the base64 plus indented-JSON copies in the START response. Oversized patches stop before a new authority is created.
+
+`candidate_diff` is an exact-byte object rather than a JSON string:
+
+| Field | Meaning |
+| --- | --- |
+| `encoding` | Always `base64`; `data` is canonical padded base64. |
+| `data` | The exact raw Git patch bytes, including bytes that are not valid UTF-8. |
+| `sha256` | `sha256:<lowercase hex>` over the decoded bytes. |
+| `byte_size` | Decoded byte count, from zero through 4,194,304. |
+
+The provider validates all four fields together before serialization. Consumers decode `data`, verify `byte_size` and `sha256`, and never reinterpret the patch as UTF-8 before that verification. Manifest entries stay in persisted path order and expose:
+
+| Field | Meaning |
+| --- | --- |
+| `path` | Repository-relative logical path; absolute repository paths are never emitted. |
+| `status` | Stable `A`, `D`, `M`, or `T` tree-diff status. |
+| `old_mode` / `new_mode` | Six-digit Git modes, including zero modes for additions/deletions and symlink or gitlink modes where supported. |
+| `deleted` / `type_changed` / `mode_only` | Explicit state that consumers do not need to infer from patch prose. |
+| `intended_untracked` | Whether the frozen snapshot bound the path as intended-untracked provenance. |
+
+Missing context is different from a valid empty candidate: the latter is encoded as `candidate_diff: {"encoding":"base64","data":"","sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","byte_size":0}` with `changed_path_manifest: []`. The schema and runtime require both context fields or neither; selected lenses require both. START rejects incomplete, non-canonical, digest-mismatched, oversized, or structurally mismatched context before serialization. Unnegotiated START retains its legacy behavior and emits neither field nor candidate contents.
 
 Reviewer results may omit the top-level `lens`; when present, it must match the selected-lens position returned by start. Both the short names (`risk`, `resilience`, `readability`, `reliability`) and the negotiated facade names (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) map to the same native lenses. A mismatch is rejected before authority mutation instead of being overwritten.
 
@@ -155,7 +184,7 @@ Every failed operation explicitly negotiated through `gentle-ai.review-integrati
 
 Messages never contain authority or receipt paths, locks, tokens, raw provider stderr, or canonical store bytes. Invalid or unsupported explicit contracts fail before mutation through the same envelope. A negotiated gate denial is a failure envelope, not a successful operation result; gate evaluation remains read-only.
 
-Negotiated operations have a 25-second aggregate budget. Local Git children have a 15-second budget, remote `ls-remote` children have a 20-second budget, and every child uses a one-second wait delay after cancellation. `operation_timeout`, `git_command_timeout`, and `git_command_failed` are typed, non-amplifying failures with `retry_safe: false`. Process-control failures — a Git child that could not be started or whose process tree could not be brought under control (for example Windows job-object or resume failures) — classify as `git_command_failed` and carry the underlying cause in `message`. Read-only and proven pre-transition Git failures report `not_started`. Once FINALIZE has committed any native transition, a later Git or process failure reports `mutation_outcome: unknown`, `authority_applicability: current_target`, and `next_action: review.status`; it never weakens committed progress to `not_started` or recommends replay. Deterministic lock, receipt-discovery, and scope-change failures never recommend automatic retry.
+Negotiated operations have a 25-second aggregate budget. Local Git children have a 15-second budget, remote `ls-remote` children have a 20-second budget, and every child uses a one-second wait delay after cancellation. `operation_timeout`, `git_command_timeout`, and `git_command_failed` are typed, non-amplifying failures with `retry_safe: false`. Process-control failures — a Git child that could not be started or whose process tree could not be brought under control (for example Windows job-object or resume failures) — classify as `git_command_failed` and carry the underlying cause in `message`. Read-only and proven pre-transition Git failures report `not_started`. Negotiated START renders and validates a new target's context before creating authority. If context rendering instead fails after START selected an existing durable authority, the failure reports `phase: native_committed`, `mutation_outcome: unknown`, the exact lineage input, and `next_action: review.status`; it never falsely reports `not_started` or recommends replay. Once FINALIZE has committed any native transition, a later Git or process failure follows the same unknown/status rule. Deterministic lock, receipt-discovery, and scope-change failures never recommend automatic retry.
 
 ## Reconcile interruptions before replay
 
@@ -222,8 +251,8 @@ Pi adoption, fallback retirement, package pinning, and Pi release sequencing are
 
 Each release archive contains:
 
-- `contracts/review-integration/v1/schemas/` — the original six strict JSON Schemas plus the result-artifact schema.
-- `contracts/review-integration/v1/fixtures/` — eight deterministic conformance fixtures, including all four target-applicability states.
+- `contracts/review-integration/v1/schemas/` — nine strict JSON Schemas, including preserved capability protocols v1.0/v1.1 and current v1.2.
+- `contracts/review-integration/v1/fixtures/` — eleven deterministic conformance fixtures, including all three capability minors and all four target-applicability states.
 - `docs/review-integration.md` — this ownership and consumption guide.
 
 Repository maintainers can verify source inventory or a complete GoReleaser snapshot:

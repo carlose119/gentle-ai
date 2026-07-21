@@ -463,6 +463,46 @@ func TestStartCompactAuthorityBlocksSupersededApprovedPredecessor(t *testing.T) 
 	}
 }
 
+func TestStartCompactAuthorityRunsBeforeCreateGuardOnlyAtNewAuthorityBoundary(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	writeSnapshotFile(t, repo, "tracked.txt", "candidate\n")
+	state := newCompactTestState(t, repo, "compact-start-before-create")
+	guardErr := errors.New("candidate context unavailable")
+	guardCalls := 0
+	_, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{
+		State: state,
+		BeforeCreate: func() error {
+			guardCalls++
+			return guardErr
+		},
+	})
+	if !errors.Is(err, guardErr) || guardCalls != 1 {
+		t.Fatalf("guarded START = calls %d error %v", guardCalls, err)
+	}
+	store, err := CompactAuthoritativeStore(context.Background(), repo, state.LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.StatePath()); !os.IsNotExist(err) {
+		t.Fatalf("failed before-create guard persisted authority: %v", err)
+	}
+
+	created, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: state})
+	if err != nil || created.Action != CompactStartCreated {
+		t.Fatalf("unguarded START = %#v, %v", created, err)
+	}
+	replayed, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{
+		State: state,
+		BeforeCreate: func() error {
+			t.Fatal("before-create guard ran for existing authority")
+			return guardErr
+		},
+	})
+	if err != nil || replayed.Action != CompactStartResumed {
+		t.Fatalf("existing START = %#v, %v", replayed, err)
+	}
+}
+
 func TestStartCompactAuthorityKeepsStagedAndWorkspaceAuthoritiesDistinct(t *testing.T) {
 	repo := initSnapshotRepo(t)
 	writeSnapshotFile(t, repo, "tracked.txt", "candidate\n")

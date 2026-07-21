@@ -80,6 +80,7 @@ var reviewManagedActions = []string{
 	"review.quarantine-legacy",
 	"review.reclaim",
 	"review.reconcile-authority",
+	"review.reconcile-authority-batch",
 	"review.recover",
 	"review.start",
 	"review.validate",

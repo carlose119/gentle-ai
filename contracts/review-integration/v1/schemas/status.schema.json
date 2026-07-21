@@ -170,7 +170,7 @@
             "additionalProperties": false,
             "required": ["action", "reason_code"],
             "properties": {
-              "action": { "enum": ["review.abandon", "review.finalize", "review.invalidate", "review.quarantine-legacy", "review.reclaim", "review.reconcile-authority", "review.recover", "review.start", "review.validate"] },
+              "action": { "enum": ["review.abandon", "review.finalize", "review.invalidate", "review.quarantine-legacy", "review.reclaim", "review.reconcile-authority", "review.reconcile-authority-batch", "review.recover", "review.start", "review.validate"] },
               "reason_code": { "type": "string", "pattern": "^[a-z0-9_]+$" }
             }
           }

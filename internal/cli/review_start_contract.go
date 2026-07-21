@@ -15,27 +15,29 @@ const ReviewIntegrationStartSchemaID = "https://gentle-ai.dev/contracts/review-i
 // ReviewIntegrationStartResult is the explicitly negotiated START response.
 // The legacy ReviewFacadeStartResult remains byte- and schema-compatible.
 type ReviewIntegrationStartResult struct {
-	Schema           string                         `json:"schema"`
-	Contract         string                         `json:"contract"`
-	Operation        string                         `json:"operation"`
-	Action           string                         `json:"action"`
-	LensesRequired   bool                           `json:"lenses_required"`
-	LineageID        string                         `json:"lineage_id"`
-	State            reviewtransaction.State        `json:"state"`
-	RiskLevel        reviewtransaction.RiskLevel    `json:"risk_level"`
-	SelectedLenses   []string                       `json:"selected_lenses"`
-	Projection       reviewtransaction.Projection   `json:"projection"`
-	TargetMode       reviewtransaction.TargetKind   `json:"target_mode,omitempty"`
-	TargetIdentity   string                         `json:"target_identity,omitempty"`
-	BaseTree         string                         `json:"base_tree,omitempty"`
-	CandidateTree    string                         `json:"candidate_tree,omitempty"`
-	ChangedFiles     int                            `json:"changed_files"`
-	ChangedLines     int                            `json:"changed_lines"`
-	CorrectionBudget int                            `json:"correction_budget"`
-	RiskReasons      []reviewtransaction.RiskReason `json:"risk_reasons"`
+	Schema              string                                        `json:"schema"`
+	Contract            string                                        `json:"contract"`
+	Operation           string                                        `json:"operation"`
+	Action              string                                        `json:"action"`
+	LensesRequired      bool                                          `json:"lenses_required"`
+	LineageID           string                                        `json:"lineage_id"`
+	State               reviewtransaction.State                       `json:"state"`
+	RiskLevel           reviewtransaction.RiskLevel                   `json:"risk_level"`
+	SelectedLenses      []string                                      `json:"selected_lenses"`
+	Projection          reviewtransaction.Projection                  `json:"projection"`
+	TargetMode          reviewtransaction.TargetKind                  `json:"target_mode,omitempty"`
+	TargetIdentity      string                                        `json:"target_identity,omitempty"`
+	BaseTree            string                                        `json:"base_tree,omitempty"`
+	CandidateTree       string                                        `json:"candidate_tree,omitempty"`
+	ChangedFiles        int                                           `json:"changed_files"`
+	ChangedLines        int                                           `json:"changed_lines"`
+	CorrectionBudget    int                                           `json:"correction_budget"`
+	RiskReasons         []reviewtransaction.RiskReason                `json:"risk_reasons"`
+	CandidateDiff       *reviewtransaction.FrozenCandidateDiff        `json:"candidate_diff,omitempty"`
+	ChangedPathManifest *[]reviewtransaction.ChangedPathManifestEntry `json:"changed_path_manifest,omitempty"`
 }
 
-func newReviewIntegrationStartResult(legacy ReviewFacadeStartResult, assessment reviewtransaction.RiskAssessment, targetMode reviewtransaction.TargetKind) (ReviewIntegrationStartResult, error) {
+func newReviewIntegrationStartResult(legacy ReviewFacadeStartResult, assessment reviewtransaction.RiskAssessment, targetMode reviewtransaction.TargetKind, frozenContext *reviewtransaction.FrozenCandidateContext) (ReviewIntegrationStartResult, error) {
 	assessment, err := reviewStartAssessmentForFrozenAuthority(legacy, assessment)
 	if err != nil {
 		return ReviewIntegrationStartResult{}, err
@@ -55,6 +57,15 @@ func newReviewIntegrationStartResult(legacy ReviewFacadeStartResult, assessment 
 		result.TargetIdentity = legacy.TargetIdentity
 		result.BaseTree = legacy.BaseTree
 		result.CandidateTree = legacy.CandidateTree
+	}
+	if frozenContext != nil {
+		diff := frozenContext.CandidateDiff
+		manifest := append([]reviewtransaction.ChangedPathManifestEntry(nil), frozenContext.ChangedPathManifest...)
+		if manifest == nil {
+			manifest = []reviewtransaction.ChangedPathManifestEntry{}
+		}
+		result.CandidateDiff = &diff
+		result.ChangedPathManifest = &manifest
 	}
 	if err := result.Validate(); err != nil {
 		return ReviewIntegrationStartResult{}, fmt.Errorf("validate negotiated START response: %w", err)
@@ -132,6 +143,29 @@ func (result ReviewIntegrationStartResult) Validate() error {
 	}
 	if err := validateReviewStartLenses(result.RiskLevel, result.SelectedLenses); err != nil {
 		return err
+	}
+	hasDiff, hasManifest := result.CandidateDiff != nil, result.ChangedPathManifest != nil
+	if hasDiff != hasManifest {
+		return errors.New("negotiated START candidate context is incomplete")
+	}
+	if len(result.SelectedLenses) > 0 && !hasDiff {
+		return errors.New("negotiated START selected lenses require frozen candidate context")
+	}
+	if hasManifest {
+		diffBytes, err := result.CandidateDiff.Bytes()
+		if err != nil {
+			return err
+		}
+		manifest := *result.ChangedPathManifest
+		if err := reviewtransaction.ValidateChangedPathManifest(manifest); err != nil {
+			return err
+		}
+		if len(manifest) != result.ChangedFiles {
+			return errors.New("negotiated START changed-path manifest does not match changed_files")
+		}
+		if (len(manifest) == 0) != (len(diffBytes) == 0) {
+			return errors.New("negotiated START candidate diff does not match changed-path manifest")
+		}
 	}
 	return nil
 }

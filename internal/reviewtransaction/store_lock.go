@@ -155,6 +155,14 @@ func acquireLocalStoreLock(path string) (*storeLock, error) {
 }
 
 func acquireMaintenanceLock(ctx context.Context, path string, mode maintenanceLockMode) (*MaintenanceLock, error) {
+	return acquireMaintenanceLockInternal(ctx, path, mode, false)
+}
+
+func acquireMaintenanceLockForCompactBatch(ctx context.Context, path string) (*MaintenanceLock, error) {
+	return acquireMaintenanceLockInternal(ctx, path, maintenanceExclusive, true)
+}
+
+func acquireMaintenanceLockInternal(ctx context.Context, path string, mode maintenanceLockMode, allowPreparedBatch bool) (*MaintenanceLock, error) {
 	if err := ensureMaintenanceLockPath(path); err != nil {
 		return nil, err
 	}
@@ -181,7 +189,15 @@ func acquireMaintenanceLock(ctx context.Context, path string, mode maintenanceLo
 			return nil, err
 		}
 		if locked {
-			return &MaintenanceLock{lock: &storeLock{file: file}}, nil
+			lock := &MaintenanceLock{lock: &storeLock{file: file}}
+			if !allowPreparedBatch && filepath.Base(path) == "REVIEW-MAINTENANCE.lock" {
+				base := filepath.Join(filepath.Dir(path), "review-transactions")
+				if err := ensureNoPreparedCompactBatchReconciliation(base); err != nil {
+					_ = lock.Release()
+					return nil, err
+				}
+			}
+			return lock, nil
 		}
 		_ = file.Close()
 		select {
