@@ -109,7 +109,28 @@ Missing context is different from a valid empty candidate: the latter is encoded
 
 Reviewer results may omit the top-level `lens`; when present, it must match the selected-lens position returned by start. Both the short names (`risk`, `resilience`, `readability`, `reliability`) and the negotiated facade names (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) map to the same native lenses. A mismatch is rejected before authority mutation instead of being overwritten.
 
-Durable controllers capture each result with exact lineage, target, lens, selected order, authority revision, and provider-issued repository context, then pass the emitted pathless manifests to FINALIZE as ordered `--result-artifact` values or let the provider discover every canonical result with `--captured-results`. The context and artifact references are opaque capabilities, not serialized paths: the provider resolves them from private storage, revalidates repository identity and Git directory containment, and rejects them when lineage, target, revision, selected lens/order, or live authority no longer match. Legacy `--result` files and path manifests remain compatible but cannot be mixed with artifact manifests and are not a durable cross-agent handoff.
+Durable controllers capture each result with exact lineage, target, lens, selected order, authority revision, and provider-issued repository context. Current captures emit pathless manifests with opaque references; the provider can discover every canonical result with `--captured-results`, or controllers can write each emitted manifest to its own file and pass those files to FINALIZE in selected-lens order with repeatable `--result-artifact-file <path>` flags. A `--result-artifact-file -` occurrence reads exactly one manifest from stdin; because FINALIZE has one shared stdin, `-` may appear only once across reviewer results, artifact manifests, validation, refuter outcomes, and evidence.
+
+Windows PowerShell 5.1 should use file transport because native argument reconstruction does not preserve dynamic inline JSON reliably. Write BOM-less UTF-8 so the strict JSON decoder receives the manifest bytes directly:
+
+```powershell
+$manifest = & gentle-ai review capture-result --repository-context $repositoryContext --expected-revision $revision --lineage $lineage --target $target --lens $lens --order $order --input $resultPath
+$manifestPath = Join-Path $env:TEMP "gentle-ai-review-manifest.json"
+$manifestText = [string]::Join([Environment]::NewLine, [string[]]$manifest)
+[System.IO.File]::WriteAllText($manifestPath, $manifestText, (New-Object System.Text.UTF8Encoding($false)))
+& gentle-ai review finalize --cwd $repo --lineage $lineage --result-artifact-file $manifestPath
+```
+
+Repeat `--result-artifact-file` once per selected lens. Each file contains one canonical manifest. For current captures, Gentle AI preserves the opaque reference and resolves it from private provider storage; for legacy path manifests, it preserves path bytes. Both forms retain the existing strict schema, lineage, target, lens, selected-order, ownership, lowercase SHA-256, file-identity, payload, and hash checks. File transport does not normalize manifest JSON or paths. Repository-context and artifact references are opaque capabilities, not serialized repository paths: the provider revalidates repository identity and Git-directory containment, and rejects them when lineage, target, revision, selected lens/order, or live authority no longer match.
+
+The POSIX inline form remains fully compatible:
+
+```bash
+gentle-ai review finalize --cwd "$repo" --lineage "$lineage" \
+  --result-artifact "$manifest_json"
+```
+
+Inline `--result-artifact`, file/stdin `--result-artifact-file`, legacy `--result`, and `--captured-results` are mutually exclusive reviewer-result sources. Legacy four-field captures use explicit `--cwd`; legacy `--result` files and path manifests remain compatible but are not a durable cross-agent handoff.
 
 Proof and evidence strings accept ordinary technical notation, including `HEAD^{tree}`, `{}`, `<A>`, and `=>`. Blank values and exact non-evidence sentinels such as `n/a`, `none`, `todo`, `tbd`, `pass`, `passed`, `success`, and `placeholder` remain invalid.
 

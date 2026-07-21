@@ -1027,6 +1027,8 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	flags.Var(&resultPaths, "result", "reviewer result JSON file or - for stdin; repeat in selected-lens order")
 	var resultArtifacts repeatedString
 	flags.Var(&resultArtifacts, "result-artifact", "native reviewer artifact manifest JSON; repeat in selected-lens order")
+	var resultArtifactFiles repeatedString
+	flags.Var(&resultArtifactFiles, "result-artifact-file", "native reviewer artifact manifest regular file or - for stdin; repeat in selected-lens order")
 	if err := parseReviewFlags(flags, args); err != nil {
 		return err
 	}
@@ -1043,10 +1045,17 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	if (*actionEligibility || *nextTransition) && !negotiated {
 		return errors.New("--action-eligibility and --next-transition require --contract")
 	}
-	if countFacadeStdin(resultPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
+	stdinPaths := append(append([]string{}, resultPaths...), resultArtifactFiles...)
+	if countFacadeStdin(stdinPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
 		return reviewPreflightError(errors.New("review finalize accepts stdin for only one input"))
 	}
-	if (len(resultPaths) != 0 && len(resultArtifacts) != 0) || (*capturedResults && (len(resultPaths) != 0 || len(resultArtifacts) != 0)) || (*capturedEvidence && strings.TrimSpace(*evidencePath) != "") {
+	reviewerResultSources := 0
+	for _, supplied := range []bool{len(resultPaths) != 0, len(resultArtifacts) != 0, len(resultArtifactFiles) != 0, *capturedResults} {
+		if supplied {
+			reviewerResultSources++
+		}
+	}
+	if reviewerResultSources > 1 || (*capturedEvidence && strings.TrimSpace(*evidencePath) != "") {
 		return reviewPreflightError(errors.New("review finalize accepts exactly one reviewer-result source and one final-evidence source"))
 	}
 	root, err := (reviewtransaction.SnapshotBuilder{Repo: *cwd}).ResolveRepositoryRoot(ctx)
@@ -1077,10 +1086,10 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 		}
 	}
 	terminalAtEntry := facadeTerminalState(state.State)
-	if terminalAtEntry && !facadeFinalizeReplayInputsEmpty(resultPaths, resultArtifacts, *capturedResults, *capturedEvidence, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
+	if terminalAtEntry && !facadeFinalizeReplayInputsEmpty(resultPaths, resultArtifacts, resultArtifactFiles, *capturedResults, *capturedEvidence, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
 		return errors.New("terminal review finalize accepts no review inputs; exact replay requires only --lineage")
 	}
-	if state.State != reviewtransaction.StateReviewing && (len(resultArtifacts) != 0 || len(resultPaths) != 0) {
+	if state.State != reviewtransaction.StateReviewing && (len(resultArtifacts) != 0 || len(resultArtifactFiles) != 0 || len(resultPaths) != 0) {
 		pending, pendingErr := store.PendingFinalizeAttempt()
 		if pendingErr != nil {
 			return pendingErr
@@ -1127,6 +1136,21 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	}
 	if len(resultArtifacts) != 0 {
 		reviewerResults, err = readFacadeReviewerArtifacts(resultArtifacts, store.Dir, state)
+		if err != nil {
+			return reviewPreflightError(err)
+		}
+	}
+	if len(resultArtifactFiles) != 0 {
+		manifests := make([]string, len(resultArtifactFiles))
+		for index, path := range resultArtifactFiles {
+			payload, readErr := readFacadeArtifactManifest(ctx, path)
+			if readErr != nil {
+				return reviewPreflightError(fmt.Errorf("read reviewer artifact manifest %d: %w", index+1, readErr))
+			}
+			payload = bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))
+			manifests[index] = string(payload)
+		}
+		reviewerResults, err = readFacadeReviewerArtifacts(manifests, store.Dir, state)
 		if err != nil {
 			return reviewPreflightError(err)
 		}
@@ -1442,8 +1466,8 @@ func facadeTerminalState(state reviewtransaction.State) bool {
 	return state == reviewtransaction.StateApproved || state == reviewtransaction.StateEscalated
 }
 
-func facadeFinalizeReplayInputsEmpty(results, artifacts []string, capturedResults, capturedEvidence bool, validation, refuter, evidence string, correctionLines int, failed bool, trace string) bool {
-	return len(results) == 0 && len(artifacts) == 0 && !capturedResults && !capturedEvidence && strings.TrimSpace(validation) == "" && strings.TrimSpace(refuter) == "" &&
+func facadeFinalizeReplayInputsEmpty(results, artifacts, artifactFiles []string, capturedResults, capturedEvidence bool, validation, refuter, evidence string, correctionLines int, failed bool, trace string) bool {
+	return len(results) == 0 && len(artifacts) == 0 && len(artifactFiles) == 0 && !capturedResults && !capturedEvidence && strings.TrimSpace(validation) == "" && strings.TrimSpace(refuter) == "" &&
 		strings.TrimSpace(evidence) == "" && correctionLines == 0 && !failed && strings.TrimSpace(trace) == ""
 }
 
@@ -2348,6 +2372,42 @@ func readFacadeBytes(path string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(path)
+}
+
+var errFacadeArtifactManifestInputNotRegular = errors.New("artifact manifest input must be a regular file")
+
+func readFacadeArtifactManifest(ctx context.Context, path string) ([]byte, error) {
+	file, restore, err := openFacadeArtifactManifestInput(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	interrupted := make(chan struct{})
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		cancelFacadeArtifactManifestInput(file)
+		_ = file.SetReadDeadline(time.Now())
+		_ = file.Close()
+		close(interrupted)
+	})
+	payload, readErr := io.ReadAll(io.LimitReader(file, reviewResultArtifactLimit+1))
+	if stopInterrupt() {
+		_ = file.Close()
+	} else {
+		<-interrupted
+	}
+	restoreErr := restore()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if restoreErr != nil {
+		return nil, fmt.Errorf("restore facade input mode: %w", restoreErr)
+	}
+	if len(payload) > reviewResultArtifactLimit {
+		return nil, errors.New("artifact exceeds the native result size limit")
+	}
+	return payload, nil
 }
 
 func countFacadeStdin(resultPaths []string, paths ...string) int {
