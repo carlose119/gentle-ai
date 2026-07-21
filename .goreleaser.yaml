@@ -2,10 +2,6 @@ version: 2
 
 project_name: gentle-ai
 
-before:
-  hooks:
-    - go mod tidy
-
 builds:
   - main: ./cmd/gentle-ai
     binary: gentle-ai
@@ -18,8 +14,13 @@ builds:
     goarch:
       - amd64
       - arm64
+    flags:
+      - -trimpath
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - >-
+        -s -w
+        -X main.version={{ .Version }}
+        -X github.com/gentleman-programming/gentle-ai/internal/update/upgrade.releaseMinisignPublicKeys={{ .Env.MINISIGN_PUBLIC_KEYS }}
 
 archives:
   - formats:
@@ -39,16 +40,9 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
-# signs: signs the checksum file with minisign.
-#
-# Environment contract (see README "Release verification"):
-#   MINISIGN_SECRET_KEY_FILE  absolute path to an UNPROTECTED minisign
-#                             secret key file. Stock minisign prompts for a
-#                             passphrase on stdin; CI runners are non-interactive,
-#                             so the maintainer MUST generate this key with
-#                               minisign -G -W -p public.key -s secret.key
-#                             (the -W flag disables the passphrase).
-#   release.yml materializes the key from base64 into this path before GoReleaser runs.
+# Sign only the checksum manifest. The signed trusted comment binds the exact
+# repository and tag; the updater rejects a valid signature copied from any
+# other release identity.
 signs:
   - cmd: minisign
     artifacts: checksum
@@ -58,11 +52,14 @@ signs:
       - "-s"
       - "{{ .Env.MINISIGN_SECRET_KEY_FILE }}"
       - "-m"
-      - "{{ .ArtifactName }}"
+      - "${artifact}"
+      - "-x"
+      - "${signature}"
       - "-c"
-      - "gentle-ai {{ .Version }}"
+      - "signature from gentle-ai release"
       - "-t"
-      - "signed by gentle-ai release"
+      - "repo=Gentleman-Programming/gentle-ai;tag={{ .Tag }}"
+    output: true
 
 changelog:
   sort: asc

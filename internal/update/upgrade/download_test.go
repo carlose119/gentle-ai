@@ -2,14 +2,10 @@ package upgrade
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -322,7 +318,10 @@ func TestFindBinaryInTar(t *testing.T) {
 // --- TestExpectedChecksumFor ---
 
 func TestExpectedChecksumFor(t *testing.T) {
-	content := "abc123  gentle-ai_1.0.0_darwin_arm64.tar.gz\ndef456  gentle-ai_1.0.0_linux_amd64.tar.gz\n"
+	firstDigest := strings.Repeat("a", sha256.Size*2)
+	secondDigest := strings.Repeat("b", sha256.Size*2)
+	content := firstDigest + "  gentle-ai_1.0.0_darwin_arm64.tar.gz\n" +
+		secondDigest + "  gentle-ai_1.0.0_linux_amd64.tar.gz\n"
 
 	tests := []struct {
 		name     string
@@ -335,13 +334,13 @@ func TestExpectedChecksumFor(t *testing.T) {
 			name:     "found first entry",
 			content:  content,
 			filename: "gentle-ai_1.0.0_darwin_arm64.tar.gz",
-			want:     "abc123",
+			want:     firstDigest,
 		},
 		{
 			name:     "found second entry",
 			content:  content,
 			filename: "gentle-ai_1.0.0_linux_amd64.tar.gz",
-			want:     "def456",
+			want:     secondDigest,
 		},
 		{
 			name:     "not found returns error",
@@ -457,6 +456,7 @@ func TestDownload_ChecksumVerification(t *testing.T) {
 	}
 
 	binaryName := "fake-tool"
+	privateKey := useTestReleaseKey(t)
 	tarPath := makeFakeTarGz(t, binaryName)
 	tarContent, err := os.ReadFile(tarPath)
 	if err != nil {
@@ -486,7 +486,7 @@ func TestDownload_ChecksumVerification(t *testing.T) {
 		},
 		{
 			name:            "checksum mismatch returns error",
-			checksumsBody:   fmt.Sprintf("%s  %s\n", "deadbeefdeadbeef", archiveName),
+			checksumsBody:   fmt.Sprintf("%s  %s\n", strings.Repeat("b", sha256.Size*2), archiveName),
 			checksumsStatus: http.StatusOK,
 			wantErr:         true,
 			errContains:     "checksum mismatch",
@@ -496,11 +496,11 @@ func TestDownload_ChecksumVerification(t *testing.T) {
 			checksumsBody:   "",
 			checksumsStatus: http.StatusNotFound,
 			wantErr:         true,
-			errContains:     "checksums.txt unavailable",
+			errContains:     "fetch checksums.txt",
 		},
 		{
 			name:            "archive not in checksums.txt returns error",
-			checksumsBody:   "abc123  other-tool_1.0.0_linux_amd64.tar.gz\n",
+			checksumsBody:   strings.Repeat("a", sha256.Size*2) + "  other-tool_1.0.0_linux_amd64.tar.gz\n",
 			checksumsStatus: http.StatusOK,
 			wantErr:         true,
 			errContains:     "not listed in checksums.txt",
@@ -509,11 +509,16 @@ func TestDownload_ChecksumVerification(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			signature := signTestManifest(t, privateKey, []byte(tc.checksumsBody), "test-owner", binaryName, "1.0.0")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "checksums.txt"):
 					w.WriteHeader(tc.checksumsStatus)
 					fmt.Fprint(w, tc.checksumsBody)
-				} else {
+				case strings.HasSuffix(r.URL.Path, "checksums.txt.minisig"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(signature)
+				default:
 					w.WriteHeader(http.StatusOK)
 					w.Write(tarContent) //nolint:errcheck
 				}
@@ -528,15 +533,20 @@ func TestDownload_ChecksumVerification(t *testing.T) {
 			// Mock URL builders to redirect to the test server.
 			origAssetURLFn := resolveAssetURLFn
 			origChecksumURLFn := resolveChecksumURLFn
+			origSignatureURLFn := resolveSignatureURLFn
 			t.Cleanup(func() {
 				resolveAssetURLFn = origAssetURLFn
 				resolveChecksumURLFn = origChecksumURLFn
+				resolveSignatureURLFn = origSignatureURLFn
 			})
 			resolveAssetURLFn = func(owner, repo, version, goos, goarch string) string {
 				return server.URL + "/" + archiveName
 			}
 			resolveChecksumURLFn = func(owner, repo, version string) string {
 				return server.URL + "/checksums.txt"
+			}
+			resolveSignatureURLFn = func(owner, repo, version string) string {
+				return server.URL + "/checksums.txt.minisig"
 			}
 
 			// Mock lookPathFn with a real temp binary (atomicReplace needs a valid path).
@@ -589,187 +599,3 @@ func (d dummyReadCloser) Close() error { return nil }
 
 // Suppress unused import warnings in case fmt is needed.
 var _ = fmt.Sprintf
-
-// --- TestMinisignPublicKeyFormat ---
-
-// TestMinisignPublicKeyFormat (REQ-5.1) verifies that the embedded
-// MinisignPublicKey constant is well-formed: non-empty, exactly 64 hex
-// characters (32 bytes), lowercase hex only, and decodes to ed25519.PublicKeySize
-// bytes. A malformed constant would break parseMinisign and every signature
-// verification downstream.
-func TestMinisignPublicKeyFormat(t *testing.T) {
-	const wantHexLen = ed25519.PublicKeySize * 2 // 64
-
-	if MinisignPublicKey == "" {
-		t.Fatal("MinisignPublicKey is empty; this constant must hold the gentle-ai release ed25519 public key")
-	}
-	if len(MinisignPublicKey) != wantHexLen {
-		t.Errorf("MinisignPublicKey length = %d, want %d (32 bytes hex-encoded)", len(MinisignPublicKey), wantHexLen)
-	}
-	for i, r := range MinisignPublicKey {
-		isDigit := r >= '0' && r <= '9'
-		isHexLetter := r >= 'a' && r <= 'f'
-		if !isDigit && !isHexLetter {
-			t.Errorf("MinisignPublicKey[%d] = %q, want lowercase hex [0-9a-f]", i, r)
-		}
-	}
-
-	decoded, err := hex.DecodeString(MinisignPublicKey)
-	if err != nil {
-		t.Fatalf("hex.DecodeString(MinisignPublicKey): %v", err)
-	}
-	if len(decoded) != ed25519.PublicKeySize {
-		t.Errorf("decoded key length = %d, want %d", len(decoded), ed25519.PublicKeySize)
-	}
-}
-
-// --- TestParseMinisign ---
-
-// minisigHexKey returns a fixed hex-encoded ed25519 public key for parseMinisign tests.
-// Using a deterministic pubkey (bytes 0x01..0x20) keeps the test stable across runs.
-func minisigHexKey(t *testing.T) string {
-	t.Helper()
-	pub := make([]byte, ed25519.PublicKeySize)
-	for i := range pub {
-		pub[i] = byte(i + 1)
-	}
-	return hex.EncodeToString(pub)
-}
-
-// minisigRawPub returns the raw bytes of the test pubkey (32 bytes).
-func minisigRawPub() []byte {
-	pub := make([]byte, ed25519.PublicKeySize)
-	for i := range pub {
-		pub[i] = byte(i + 1)
-	}
-	return pub
-}
-
-// TestParseMinisign_Valid verifies that a well-formed minisig blob returns the
-// ed25519 public key embedded in line 4.
-func TestParseMinisign_Valid(t *testing.T) {
-	pub := minisigRawPub()
-	pubHex := hex.EncodeToString(pub)
-
-	// Sig line: 74 zero bytes (= 2 signum + 8 keynum + 64 ed25519 sig).
-	sigBin := make([]byte, 2+8+ed25519.SignatureSize)
-	sigB64 := base64.StdEncoding.EncodeToString(sigBin)
-
-	// Key line: 2 signum (0x01, 0x00) + 8 keynum (zeros) + 32-byte pub.
-	keyBin := append([]byte{0x01, 0x00}, append(make([]byte, 8), pub...)...)
-	keyB64 := base64.StdEncoding.EncodeToString(keyBin)
-
-	blob := []byte(
-		"untrusted comment: signed by gentle-ai release\n" +
-			sigB64 + "\n" +
-			"trusted comment: gentle-ai 1.0.0\n" +
-			keyB64 + "\n",
-	)
-
-	got, err := parseMinisign(pubHex, blob)
-	if err != nil {
-		t.Fatalf("parseMinisign returned unexpected error: %v", err)
-	}
-	if !bytes.Equal(got, pub) {
-		t.Errorf("parseMinisign returned %x, want %x", got, pub)
-	}
-}
-
-// TestParseMinisign_Malformed exercises every path that should surface
-// ErrSignatureBlobMalformed.
-func TestParseMinisign_Malformed(t *testing.T) {
-	pubHex := minisigHexKey(t)
-
-	// Pre-build a well-formed 74-byte sig blob and a well-formed 42-byte key
-	// blob so the malformed cases can selectively corrupt each one in turn.
-	wellFormedSig := make([]byte, 2+8+ed25519.SignatureSize)
-	wellFormedKey := append([]byte{0x01, 0x00}, append(make([]byte, 8), minisigRawPub()...)...)
-	wellFormedSigB64 := base64.StdEncoding.EncodeToString(wellFormedSig)
-	wellFormedKeyB64 := base64.StdEncoding.EncodeToString(wellFormedKey)
-
-	tests := []struct {
-		name string
-		hex  string
-		blob []byte
-	}{
-		{
-			name: "invalid hex public key",
-			hex:  "not-a-hex-string",
-			blob: []byte("untrusted comment: x\n" + wellFormedSigB64 + "\ntrusted comment: y\n" + wellFormedKeyB64 + "\n"),
-		},
-		{
-			name: "wrong hex key length",
-			hex:  "deadbeef",
-			blob: []byte("untrusted comment: x\n" + wellFormedSigB64 + "\ntrusted comment: y\n" + wellFormedKeyB64 + "\n"),
-		},
-		{
-			name: "empty blob",
-			hex:  pubHex,
-			blob: []byte(""),
-		},
-		{
-			name: "too few lines",
-			hex:  pubHex,
-			blob: []byte("untrusted comment: x\n" + wellFormedSigB64 + "\n"),
-		},
-		{
-			name: "too many lines",
-			hex:  pubHex,
-			blob: []byte(
-				"untrusted comment: x\n" + wellFormedSigB64 + "\n" +
-					"trusted comment: y\n" + wellFormedKeyB64 + "\n" +
-					"stray extra line\n",
-			),
-		},
-		{
-			name: "untrusted comment prefix missing",
-			hex:  pubHex,
-			blob: []byte("not-a-comment-prefix\n" + wellFormedSigB64 + "\ntrusted comment: y\n" + wellFormedKeyB64 + "\n"),
-		},
-		{
-			name: "trusted comment prefix missing",
-			hex:  pubHex,
-			blob: []byte("untrusted comment: x\n" + wellFormedSigB64 + "\nnot-a-comment-prefix\n" + wellFormedKeyB64 + "\n"),
-		},
-		{
-			name: "signature line base64 invalid",
-			hex:  pubHex,
-			blob: []byte("untrusted comment: x\n!!!notbase64!!!\ntrusted comment: y\n" + wellFormedKeyB64 + "\n"),
-		},
-		{
-			name: "signature line too short",
-			hex:  pubHex,
-			blob: []byte(
-				"untrusted comment: x\n" +
-					base64.StdEncoding.EncodeToString(make([]byte, 5)) + "\n" +
-					"trusted comment: y\n" + wellFormedKeyB64 + "\n",
-			),
-		},
-		{
-			name: "pubkey line base64 invalid",
-			hex:  pubHex,
-			blob: []byte("untrusted comment: x\n" + wellFormedSigB64 + "\ntrusted comment: y\n!!!notbase64!!!\n"),
-		},
-		{
-			name: "pubkey line too short",
-			hex:  pubHex,
-			blob: []byte(
-				"untrusted comment: x\n" + wellFormedSigB64 + "\n" +
-					"trusted comment: y\n" +
-					base64.StdEncoding.EncodeToString(make([]byte, 5)) + "\n",
-			),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseMinisign(tc.hex, tc.blob)
-			if err == nil {
-				t.Fatalf("parseMinisign returned nil error, want ErrSignatureBlobMalformed")
-			}
-			if !errors.Is(err, ErrSignatureBlobMalformed) {
-				t.Errorf("parseMinisign error = %v, want errors.Is(_, ErrSignatureBlobMalformed)", err)
-			}
-		})
-	}
-}

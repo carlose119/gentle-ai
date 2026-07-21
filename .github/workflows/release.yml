@@ -5,42 +5,117 @@ on:
     tags:
       - "v*"
 
+# Read-only is the workflow default. Only the publication job receives the one
+# write capability GoReleaser needs.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  goreleaser:
-    runs-on: ubuntu-latest
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      MINISIGN_PUBLIC_KEYS: ${{ vars.MINISIGN_PUBLIC_KEYS }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+      - name: Checkout exact tag
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
 
-      - name: Install minisign
-        run: sudo apt-get install -y minisign
+      - name: Verify tag, main, trust anchors, and module immutability
+        run: ./scripts/release-preflight.sh
 
-      # Materialize the minisign secret key from the base64-encoded GitHub
-      # secret into a real key file on disk. GoReleaser's signs block expects
-      # MINISIGN_SECRET_KEY_FILE to point at an existing keyfile path,
-      # not the key contents (minisign reads -s <keyfile>, never stdin).
-      - name: Materialize minisign secret key
-        run: echo "$MINISIGN_SECRET_KEY_BASE64" | base64 -d > /tmp/minisign.key && chmod 600 /tmp/minisign.key
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go format
+        run: go run ./internal/gofmtcheck
+
+  release:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+    env:
+      MINISIGN_PUBLIC_KEYS: ${{ vars.MINISIGN_PUBLIC_KEYS }}
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Recheck immutable release provenance
+        run: ./scripts/release-preflight.sh
+
+      - name: Configure ephemeral signing paths
+        run: |
+          printf 'MINISIGN_SECRET_KEY_FILE=%s/gentle-ai-release.key\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
+          printf 'MINISIGN_SIGNING_PUBLIC_KEY_FILE=%s/gentle-ai-release-signing.pub\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
+
+      - name: Install Minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y minisign
+
+      - name: Materialize signing key
         env:
-          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
+          SIGNING_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SIGNING_KEY_B64"
+          printf '%s' "$SIGNING_KEY_B64" | base64 --decode >"$MINISIGN_SECRET_KEY_FILE"
+          test -s "$MINISIGN_SECRET_KEY_FILE"
+          chmod 600 "$MINISIGN_SECRET_KEY_FILE"
+
+      - name: Verify signing credential and identity binding
+        run: ./scripts/release-signing-preflight.sh
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89  # v7.2.2
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          version: "~> v2"
+          version: v2.15.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
-          MINISIGN_SECRET_KEY_FILE: /tmp/minisign.key
+          MINISIGN_SECRET_KEY_FILE: ${{ env.MINISIGN_SECRET_KEY_FILE }}
+          MINISIGN_PUBLIC_KEYS: ${{ env.MINISIGN_PUBLIC_KEYS }}
+
+      - name: Verify published assets from GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/verify-release-assets.sh
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          if command -v shred >/dev/null 2>&1; then
+            shred --remove "$MINISIGN_SECRET_KEY_FILE" 2>/dev/null || true
+          else
+            rm -f "$MINISIGN_SECRET_KEY_FILE"
+          fi
+          rm -f "$MINISIGN_SIGNING_PUBLIC_KEY_FILE"

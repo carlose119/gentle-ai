@@ -4,9 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,9 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
+
+	minisign "github.com/jedisct1/go-minisign"
 
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
@@ -30,17 +31,53 @@ var httpClient = &http.Client{Timeout: 5 * time.Minute}
 // lookPathFn resolves the binary path. Package-level var for testability.
 var lookPathFn = exec.LookPath
 
-// resolveAssetURLFn and resolveChecksumURLFn build download URLs.
+// URL builders are package variables so tests can route release traffic to an
+// isolated server without weakening the production URL contract.
 // Package-level vars for testability.
-var resolveAssetURLFn = resolveAssetURL
-var resolveChecksumURLFn = resolveChecksumURL
+var (
+	resolveAssetURLFn     = resolveAssetURL
+	resolveChecksumURLFn  = resolveChecksumURL
+	resolveSignatureURLFn = resolveSignatureURL
+)
+
+const (
+	maxChecksumManifestBytes         = 1 << 20 // 1 MiB
+	maxChecksumSignatureBytes        = 16 << 10
+	unsetReleaseMinisignPublicKeys   = "UNSET"
+	legacyZeroMinisignKeyPlaceholder = "0000000000000000000000000000000000000000000000000000000000000000"
+)
+
+// releaseMinisignPublicKeys is the production trust-anchor injection point.
+// GoReleaser sets it with:
+//
+//	-X github.com/gentleman-programming/gentle-ai/internal/update/upgrade.releaseMinisignPublicKeys=${MINISIGN_PUBLIC_KEYS}
+//
+// The value is one or two comma-separated minisign public-key payloads (the
+// base64 line accepted by `minisign -P`). Two keys permit a bounded overlap
+// during rotation. Source and test builds deliberately retain UNSET and fail
+// closed if their binary updater is invoked.
+var releaseMinisignPublicKeys = unsetReleaseMinisignPublicKeys
+
+var (
+	ErrReleaseTrustUnavailable     = errors.New("release trust anchor unavailable")
+	ErrSignatureVerificationFailed = errors.New("release signature verification failed")
+	ErrSignatureBlobMalformed      = errors.New("release signature is malformed")
+	ErrSignatureIdentityMismatch   = errors.New("release signature identity mismatch")
+)
+
+var (
+	exactReleaseVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	githubSlugPattern          = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+)
 
 // Download downloads the GitHub release binary for the given tool, verifies its
-// SHA256 checksum against the release's checksums.txt, and replaces the installed
-// binary atomically.
+// SHA256 checksum against an authenticated checksums.txt, and replaces the
+// installed binary atomically.
 //
-// Checksum verification is mandatory: the install fails if checksums.txt is
-// unavailable, if the archive is not listed, or if the digest does not match.
+// Verification order is deliberate: validate the configured trust anchor,
+// fetch the bounded manifest and detached signature, authenticate both the
+// manifest and its exact repository/tag binding, parse one unique archive
+// digest, then download/check/extract and finally replace the binary.
 //
 // This function is not called on Windows — callers (strategy.go) gate it via
 // platform check and return a manual fallback error instead.
@@ -52,6 +89,12 @@ func Download(ctx context.Context, r update.UpdateResult, profile system.Platfor
 		}
 		return fmt.Errorf("upgrade %q on Windows requires manual update — %s", r.Tool.Name, hint)
 	}
+	if err := validateReleaseIdentity(r.Tool.Owner, r.Tool.Repo, r.LatestVersion); err != nil {
+		return fmt.Errorf("authenticate release: %w", err)
+	}
+	if _, err := configuredReleasePublicKeys(); err != nil {
+		return fmt.Errorf("authenticate release: %w", err)
+	}
 
 	// Resolve the current binary path from PATH.
 	binaryPath, err := lookPathFn(r.Tool.Name)
@@ -62,8 +105,25 @@ func Download(ctx context.Context, r update.UpdateResult, profile system.Platfor
 	archiveName := resolveArchiveName(r.Tool.Repo, r.LatestVersion, profile.OS, runtime.GOARCH)
 	assetURL := resolveAssetURLFn(r.Tool.Owner, r.Tool.Repo, r.LatestVersion, profile.OS, runtime.GOARCH)
 	checksumURL := resolveChecksumURLFn(r.Tool.Owner, r.Tool.Repo, r.LatestVersion)
+	signatureURL := resolveSignatureURLFn(r.Tool.Owner, r.Tool.Repo, r.LatestVersion)
 
-	// Download archive to a temp directory so we can verify before extracting.
+	checksumsContent, err := fetchChecksums(ctx, checksumURL)
+	if err != nil {
+		return fmt.Errorf("authenticate release: fetch checksums.txt: %w", err)
+	}
+	signature, err := fetchChecksumSignature(ctx, signatureURL)
+	if err != nil {
+		return fmt.Errorf("authenticate release: fetch checksums.txt.minisig: %w", err)
+	}
+	if err := verifyChecksumsSignature([]byte(checksumsContent), signature, r.Tool.Owner, r.Tool.Repo, r.LatestVersion); err != nil {
+		return fmt.Errorf("authenticate release: %w", err)
+	}
+	expectedDigest, err := expectedChecksumFor(checksumsContent, archiveName)
+	if err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+
+	// Download only after the signed manifest has been authenticated.
 	tmpDir, err := os.MkdirTemp("", "gentle-ai-upgrade-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -75,16 +135,6 @@ func Download(ctx context.Context, r update.UpdateResult, profile system.Platfor
 	if err != nil {
 		return fmt.Errorf("download %s: %w", r.Tool.Name, err)
 	}
-
-	// Verify checksum — fail closed if checksums.txt is unavailable or mismatched.
-	checksumsContent, err := fetchChecksums(ctx, checksumURL)
-	if err != nil {
-		return fmt.Errorf("checksum verification failed: checksums.txt unavailable: %w", err)
-	}
-	expectedDigest, err := expectedChecksumFor(checksumsContent, archiveName)
-	if err != nil {
-		return fmt.Errorf("checksum verification failed: %w", err)
-	}
 	if actualDigest != expectedDigest {
 		return fmt.Errorf("checksum mismatch for %s:\n  expected: %s\n  got:      %s",
 			archiveName, expectedDigest, actualDigest)
@@ -92,6 +142,7 @@ func Download(ctx context.Context, r update.UpdateResult, profile system.Platfor
 
 	// Extract the verified binary.
 	tmpBinaryPath := binaryPath + ".new"
+	defer os.Remove(tmpBinaryPath)
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -99,13 +150,11 @@ func Download(ctx context.Context, r update.UpdateResult, profile system.Platfor
 	defer f.Close()
 
 	if err := extractBinaryFromTarGz(f, r.Tool.Name, tmpBinaryPath); err != nil {
-		_ = os.Remove(tmpBinaryPath)
 		return fmt.Errorf("extract %s: %w", r.Tool.Name, err)
 	}
 
 	// Atomic replace.
 	if err := atomicReplace(tmpBinaryPath, binaryPath); err != nil {
-		_ = os.Remove(tmpBinaryPath)
 		return fmt.Errorf("replace %q: %w", binaryPath, err)
 	}
 
@@ -131,6 +180,12 @@ func resolveAssetURL(owner, repo, version, goos, goarch string) string {
 func resolveChecksumURL(owner, repo, version string) string {
 	return fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/checksums.txt",
 		owner, repo, version)
+}
+
+// resolveSignatureURL constructs the URL for the detached signature over the
+// checksum manifest, not a signature over an individual archive.
+func resolveSignatureURL(owner, repo, version string) string {
+	return resolveChecksumURL(owner, repo, version) + ".minisig"
 }
 
 // downloadToFile downloads the resource at url to outPath and returns the
@@ -170,24 +225,42 @@ func downloadToFile(ctx context.Context, url string, outPath string) (hexDigest 
 // fetchChecksums downloads checksums.txt from url and returns its content.
 // Returns an error if the file cannot be fetched or the server returns non-200.
 func fetchChecksums(ctx context.Context, url string) (string, error) {
+	data, err := fetchBounded(ctx, url, "checksums.txt", maxChecksumManifestBytes)
+	return string(data), err
+}
+
+func fetchChecksumSignature(ctx context.Context, url string) ([]byte, error) {
+	return fetchBounded(ctx, url, "checksums.txt.minisig", maxChecksumSignatureBytes)
+}
+
+func fetchBounded(ctx context.Context, url, assetName string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("%s: invalid size limit", assetName)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch checksums.txt: %w", err)
+		return nil, fmt.Errorf("fetch %s: %w", assetName, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("checksums.txt: HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s: HTTP %d", assetName, resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
+	if resp.ContentLength > maxBytes {
+		return nil, fmt.Errorf("%s exceeds %d-byte limit", assetName, maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("read checksums.txt: %w", err)
+		return nil, fmt.Errorf("read %s: %w", assetName, err)
 	}
-	return string(data), nil
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%s exceeds %d-byte limit", assetName, maxBytes)
+	}
+	return data, nil
 }
 
 // expectedChecksumFor parses checksums.txt content and returns the SHA256 hex
@@ -195,13 +268,28 @@ func fetchChecksums(ctx context.Context, url string) (string, error) {
 //
 // GoReleaser produces BSD-style checksums.txt: "<digest>  <filename>" per line.
 func expectedChecksumFor(content, filename string) (string, error) {
+	var digest string
 	for _, line := range strings.Split(content, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == filename {
-			return fields[0], nil
+		if len(fields) < 2 || fields[1] != filename {
+			continue
 		}
+		if len(fields) != 2 {
+			return "", fmt.Errorf("%q has a malformed checksums.txt entry", filename)
+		}
+		if digest != "" {
+			return "", fmt.Errorf("%q has duplicate checksums.txt entries", filename)
+		}
+		decoded, err := hex.DecodeString(fields[0])
+		if err != nil || len(decoded) != sha256.Size || fields[0] != strings.ToLower(fields[0]) {
+			return "", fmt.Errorf("%q has an invalid SHA256 digest", filename)
+		}
+		digest = fields[0]
 	}
-	return "", fmt.Errorf("%q not listed in checksums.txt", filename)
+	if digest == "" {
+		return "", fmt.Errorf("%q not listed in checksums.txt", filename)
+	}
+	return digest, nil
 }
 
 // downloadBinary fetches the asset at url, extracts the binary named binaryName
@@ -228,8 +316,9 @@ func downloadBinary(ctx context.Context, url string, binaryName string, outPath 
 	return extractBinaryFromTarGz(resp.Body, binaryName, outPath)
 }
 
-// extractBinaryFromTarGz reads a .tar.gz stream and extracts the first file
-// whose base name matches binaryName, writing it to outPath.
+// extractBinaryFromTarGz reads a .tar.gz stream and requires exactly one
+// regular file whose base name matches binaryName. It scans through EOF before
+// returning success so duplicate candidates cannot win by archive order.
 func extractBinaryFromTarGz(r io.Reader, binaryName string, outPath string) error {
 	gr, err := gzip.NewReader(r)
 	if err != nil {
@@ -238,6 +327,13 @@ func extractBinaryFromTarGz(r io.Reader, binaryName string, outPath string) erro
 	defer gr.Close()
 
 	tr := tar.NewReader(gr)
+	written := false
+	defer func() {
+		if !written {
+			_ = os.Remove(outPath)
+		}
+	}()
+	found := false
 
 	for {
 		hdr, err := tr.Next()
@@ -252,14 +348,21 @@ func extractBinaryFromTarGz(r io.Reader, binaryName string, outPath string) erro
 		// Only accept regular files — skip symlinks, hardlinks, and special files.
 		if filepath.Base(hdr.Name) == binaryName &&
 			(hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA) {
+			if found {
+				return fmt.Errorf("binary %q appears more than once in archive", binaryName)
+			}
 			if err := writeExecutable(tr, outPath); err != nil {
 				return err
 			}
-			return nil
+			found = true
 		}
 	}
 
-	return fmt.Errorf("binary %q not found in archive", binaryName)
+	if !found {
+		return fmt.Errorf("binary %q not found in archive", binaryName)
+	}
+	written = true
+	return nil
 }
 
 // writeExecutable writes the content from r to outPath with executable permissions.
@@ -291,116 +394,71 @@ func atomicReplace(src, dst string) error {
 	return nil
 }
 
-// --- Release signature verification (slice A: helper only) ---
+func validateReleaseIdentity(owner, repo, version string) error {
+	if !githubSlugPattern.MatchString(owner) || !githubSlugPattern.MatchString(repo) {
+		return fmt.Errorf("invalid GitHub repository identity %q", owner+"/"+repo)
+	}
+	if !exactReleaseVersionPattern.MatchString(version) {
+		return fmt.Errorf("release version %q is not exact stable semver", version)
+	}
+	return nil
+}
 
-// MinisignPublicKey is the ed25519 public key (hex) used to verify signed
-// release artifacts. It must be exactly 64 hex characters (32 bytes).
-//
-// The value below is a placeholder. The maintainer replaces it with the real
-// gentle-ai release key before the first signed release ships.
-var MinisignPublicKey = "0000000000000000000000000000000000000000000000000000000000000000"
+func releaseTrustedComment(owner, repo, version string) string {
+	return fmt.Sprintf("repo=%s/%s;tag=v%s", owner, repo, version)
+}
 
-// MinisignGraceCutoffVersion is the release version at and above which an
-// artifact MUST be signed. Releases at or after this version fail the install
-// if they are not signed or the signature does not verify.
-//
-// Releases strictly before this version are tolerated as unsigned (grace window
-// for already-published artifacts).
-var MinisignGraceCutoffVersion = "v1.23.0"
+func configuredReleasePublicKeys() ([]minisign.PublicKey, error) {
+	raw := strings.TrimSpace(releaseMinisignPublicKeys)
+	if raw == "" || raw == unsetReleaseMinisignPublicKeys || raw == legacyZeroMinisignKeyPlaceholder {
+		return nil, ErrReleaseTrustUnavailable
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) < 1 || len(parts) > 2 {
+		return nil, fmt.Errorf("%w: expected one key or a two-key rotation overlap", ErrReleaseTrustUnavailable)
+	}
+	keys := make([]minisign.PublicKey, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		encoded := strings.TrimSpace(part)
+		if encoded == "" || encoded == unsetReleaseMinisignPublicKeys || encoded == legacyZeroMinisignKeyPlaceholder {
+			return nil, ErrReleaseTrustUnavailable
+		}
+		if _, duplicate := seen[encoded]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate public key", ErrReleaseTrustUnavailable)
+		}
+		key, err := minisign.NewPublicKey(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("%w: malformed public key: %v", ErrReleaseTrustUnavailable, err)
+		}
+		seen[encoded] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
 
-// Sentinel errors emitted by release signature verification.
-var (
-	// ErrSignatureVerificationFailed: the signature was present and parsed
-	// successfully, but ed25519.Verify rejected it against MinisignPublicKey.
-	ErrSignatureVerificationFailed = errors.New("signature verification failed")
-
-	// ErrSignatureMissing: the release artifacts are at or after
-	// MinisignGraceCutoffVersion, but no .minisig file is published alongside
-	// them. Install must fail closed.
-	ErrSignatureMissing = errors.New("signature file missing")
-
-	// ErrSignatureFetchFailed: the .minisig file URL was unreachable or
-	// returned non-200. Treated as a hard failure during the grace window
-	// to preserve fail-closed semantics.
-	ErrSignatureFetchFailed = errors.New("signature file could not be fetched")
-
-	// ErrSignatureBlobMalformed: the .minisig content cannot be parsed
-	// (wrong line count, bad prefix, bad base64, wrong decoded length, or
-	// the hex key embedded in the constant is itself malformed).
-	ErrSignatureBlobMalformed = errors.New("signature blob malformed")
-)
-
-// parseMinisign parses a minisign-format .minisig blob into an ed25519 public
-// key. It also decodes the caller-supplied hexPubKey to validate the caller's
-// input; the returned key is the one embedded in line 4 of the minisig file.
-//
-// A minisig file has exactly 4 lines:
-//
-//	line 1: "untrusted comment: <free text>"
-//	line 2: base64(2-byte signum || 8-byte keynum || 64-byte ed25519 signature)
-//	line 3: "trusted comment: <free text>"
-//	line 4: base64(2-byte signum || 8-byte keynum || 32-byte ed25519 public key)
-//
-// The function does NOT call ed25519.Verify — that is the caller's job in
-// the wired flow (slice B). This helper exists purely to surface malformed
-// blobs cheaply before any signature math runs.
-//
-// Returns ErrSignatureBlobMalformed (wrapped with details) for any structural
-// problem: wrong line count, unexpected prefix, invalid base64, hex key
-// invalid, or unexpected decoded length.
-func parseMinisign(hexPubKey string, minisigBlob []byte) (ed25519.PublicKey, error) {
-	// Decode and validate the caller's hex-encoded public key. This
-	// guarantees the caller's constant is at least well-formed before any
-	// downstream signature verification runs.
-	rawKey, err := hex.DecodeString(hexPubKey)
+func verifyChecksumsSignature(manifest, signatureBlob []byte, owner, repo, version string) error {
+	if err := validateReleaseIdentity(owner, repo, version); err != nil {
+		return err
+	}
+	keys, err := configuredReleasePublicKeys()
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid hex public key: %v", ErrSignatureBlobMalformed, err)
+		return err
 	}
-	if len(rawKey) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("%w: hex public key length: got %d, want %d",
-			ErrSignatureBlobMalformed, len(rawKey), ed25519.PublicKeySize)
-	}
-
-	// Split the .minisig content into exactly 4 lines. Allow a single
-	// trailing CR/LF/CRLF, but no other stray whitespace.
-	text := strings.TrimRight(string(minisigBlob), "\r\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) != 4 {
-		return nil, fmt.Errorf("%w: expected 4 lines, got %d",
-			ErrSignatureBlobMalformed, len(lines))
-	}
-
-	if !strings.HasPrefix(lines[0], "untrusted comment: ") {
-		return nil, fmt.Errorf("%w: line 1 must start with %q",
-			ErrSignatureBlobMalformed, "untrusted comment: ")
-	}
-	if !strings.HasPrefix(lines[2], "trusted comment: ") {
-		return nil, fmt.Errorf("%w: line 3 must start with %q",
-			ErrSignatureBlobMalformed, "trusted comment: ")
-	}
-
-	// Line 2: signature blob = 2 signum + 8 keynum + 64 signature bytes = 74 bytes.
-	const sigLineLen = 2 + 8 + ed25519.SignatureSize
-	sigBin, err := base64.StdEncoding.DecodeString(lines[1])
+	signature, err := minisign.DecodeSignature(string(signatureBlob))
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid signature base64: %v", ErrSignatureBlobMalformed, err)
+		return fmt.Errorf("%w: %v", ErrSignatureBlobMalformed, err)
 	}
-	if len(sigBin) != sigLineLen {
-		return nil, fmt.Errorf("%w: signature line decoded length: got %d, want %d",
-			ErrSignatureBlobMalformed, len(sigBin), sigLineLen)
+	for i := range keys {
+		verified, verifyErr := keys[i].Verify(manifest, signature)
+		if verifyErr != nil || !verified {
+			continue
+		}
+		expected := "trusted comment: " + releaseTrustedComment(owner, repo, version)
+		if signature.TrustedComment != expected {
+			return fmt.Errorf("%w: got %q, want %q", ErrSignatureIdentityMismatch, signature.TrustedComment, expected)
+		}
+		return nil
 	}
-
-	// Line 4: key blob = 2 signum + 8 keynum + 32 pubkey bytes = 42 bytes.
-	const keyLineLen = 2 + 8 + ed25519.PublicKeySize
-	keyBin, err := base64.StdEncoding.DecodeString(lines[3])
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid pubkey base64: %v", ErrSignatureBlobMalformed, err)
-	}
-	if len(keyBin) != keyLineLen {
-		return nil, fmt.Errorf("%w: pubkey line decoded length: got %d, want %d",
-			ErrSignatureBlobMalformed, len(keyBin), keyLineLen)
-	}
-
-	// Skip the 10-byte header (signum + keynum) and return the 32-byte key.
-	return ed25519.PublicKey(keyBin[10:]), nil
+	return ErrSignatureVerificationFailed
 }
