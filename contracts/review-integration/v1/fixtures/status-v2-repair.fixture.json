@@ -27,14 +27,29 @@
   },
   "repair": {
     "schema": "gentle-ai.review-authority-repair-assessment/v1",
-    "status": "unsupported",
+    "status": "eligible",
+    "class": "legacy_v1_historical_alias",
+    "cause": "unsupported_historical_v1_operation_alias",
+    "disposition": "quarantine-approved-historical-alias",
+    "repository_binding": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "candidate": {
+      "lineage_id": "historical-alias",
+      "revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "chain_identity": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "event_count": 6,
+      "alias_event_count": 2,
+      "operations": [
+        "review/complete-fix",
+        "review/validate-fix"
+      ]
+    },
     "counts": {
-      "lineages": 0,
+      "lineages": 1,
       "compact_lineages": 0,
-      "legacy_lineages": 0,
-      "events": 0,
-      "bytes": 0,
-      "eligible_candidates": 0,
+      "legacy_lineages": 1,
+      "events": 6,
+      "bytes": 4096,
+      "eligible_candidates": 1,
       "unsupported_lineages": 0,
       "conflicts": 0
     },
@@ -48,9 +63,13 @@
   "eligibility": {
     "allowed_actions": [
       {
-        "action": "stop",
-        "reason_code": "forbidden_manual_intervention_required",
-        "required_inputs": []
+        "action": "review.repair",
+        "reason_code": "eligible_classified_authority_repair",
+        "required_inputs": [
+          "actor",
+          "reason",
+          "maintainer_authorization"
+        ]
       }
     ],
     "forbidden_actions": [
@@ -87,10 +106,6 @@
         "reason_code": "forbidden_corrupted_authority"
       },
       {
-        "action": "review.repair",
-        "reason_code": "forbidden_corrupted_authority"
-      },
-      {
         "action": "review.start",
         "reason_code": "forbidden_corrupted_authority"
       },
@@ -99,5 +114,44 @@
         "reason_code": "forbidden_corrupted_authority"
       }
     ]
+  },
+  "next_transition": {
+    "kind": "collect",
+    "reason_code": "repair_authorization_required",
+    "collect": {
+      "inputs": [
+        {
+          "name": "repair_authorization",
+          "schema": "gentle-ai.review-repair-authorization/v1",
+          "capture_operation": "external.authorize_repair",
+          "arguments": [
+            {
+              "name": "class",
+              "value": "legacy_v1_historical_alias"
+            },
+            {
+              "name": "lineage",
+              "value": "historical-alias"
+            },
+            {
+              "name": "expected-revision",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "name": "cause",
+              "value": "unsupported_historical_v1_operation_alias"
+            },
+            {
+              "name": "disposition",
+              "value": "quarantine-approved-historical-alias"
+            },
+            {
+              "name": "repository-binding",
+              "value": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ]
+        }
+      ]
+    }
   }
 }

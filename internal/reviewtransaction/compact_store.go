@@ -982,6 +982,11 @@ func compactAuthorityOperationalFailure(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrConcurrentUpdate) {
 		return true
 	}
+	var lockTimeout *AuthorityLockTimeoutError
+	var lockCancelled *AuthorityLockCancelledError
+	if errors.As(err, &lockTimeout) || errors.As(err, &lockCancelled) {
+		return true
+	}
 	var timeout *GitCommandTimeoutError
 	var command *GitCommandError
 	var processControl *GitProcessControlError
@@ -1095,7 +1100,13 @@ func (store CompactStore) ReceiptPath() string {
 }
 
 func (store CompactStore) Load() (CompactRecord, error) {
-	maintenance, err := store.acquireReadMaintenance(context.Background())
+	return store.LoadContext(context.Background())
+}
+
+// LoadContext reads one compact record while preserving the caller's bounded
+// cancellation through shared maintenance-lock acquisition.
+func (store CompactStore) LoadContext(ctx context.Context) (CompactRecord, error) {
+	maintenance, err := store.acquireReadMaintenance(ctx)
 	if err != nil {
 		return CompactRecord{}, err
 	}

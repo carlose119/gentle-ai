@@ -100,7 +100,12 @@ func (err *AuthorityLockCancelledError) Error() string {
 	return fmt.Sprintf("%v: %v", ErrAuthorityLockCancelled, err.Cause)
 }
 
-func (err *AuthorityLockCancelledError) Unwrap() error { return ErrAuthorityLockCancelled }
+func (err *AuthorityLockCancelledError) Unwrap() []error {
+	if err.Cause == nil {
+		return []error{ErrAuthorityLockCancelled}
+	}
+	return []error{ErrAuthorityLockCancelled, err.Cause}
+}
 
 type storeLockBusyError struct{}
 

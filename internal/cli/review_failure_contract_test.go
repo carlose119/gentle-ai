@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -183,8 +184,10 @@ func TestNegotiatedFailureLineageUsesCanonicalFlagParsing(t *testing.T) {
 		{name: "duplicate last wins", operation: ReviewIntegrationOperationFinalize, args: []string{"--lineage", "review-first", "--lineage=review-second"}, want: "review-second"},
 		{name: "duplicate malformed last clears", operation: ReviewIntegrationOperationFinalize, args: []string{"--lineage", "review-first", "--lineage=-invalid"}},
 		{name: "unknown flag fails closed", operation: ReviewIntegrationOperationFinalize, args: []string{"--unknown", "value", "--lineage", "review-hidden"}},
+		{name: "unknown flag after lineage fails closed", operation: ReviewIntegrationOperationFinalize, args: []string{"--lineage", "review-hidden", "--unknown", "value"}},
 		{name: "over maximum length", operation: ReviewIntegrationOperationFinalize, args: []string{"--lineage", "r" + strings.Repeat("a", 128)}},
 		{name: "start boolean before lineage", operation: "review.start", args: []string{"--committed-only", "--lineage", "review-start"}, want: "review-start"},
+		{name: "repair boolean before lineage", operation: "review.repair", args: []string{"--preflight=false", "--lineage", "review-repair"}, want: "review-repair"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,6 +196,46 @@ func TestNegotiatedFailureLineageUsesCanonicalFlagParsing(t *testing.T) {
 				t.Fatalf("lineage_id = %q, want %q", failure.LineageID, tt.want)
 			}
 		})
+	}
+}
+
+func TestReviewIntegrationOperationRegistryOwnsPublishedAndFailurePolicy(t *testing.T) {
+	wantOperations := []string{
+		"review.bind_sdd", "review.capabilities", "review.finalize", "review.repair", "review.start", "review.status", "review.validate",
+	}
+	if got := reviewIntegrationOperationNames(); !reflect.DeepEqual(got, wantOperations) ||
+		!reflect.DeepEqual(reviewCapabilitiesStaticSurface().Operations, wantOperations) {
+		t.Fatalf("operation registry surface = %v", got)
+	}
+	commands := map[string]struct{}{}
+	operations := map[string]struct{}{}
+	for _, metadata := range reviewIntegrationOperationRegistry {
+		if metadata.Command == "" || metadata.Operation == "" || metadata.Label == "" {
+			t.Fatalf("incomplete operation metadata: %#v", metadata)
+		}
+		if _, duplicate := commands[metadata.Command]; duplicate {
+			t.Fatalf("duplicate operation command %q", metadata.Command)
+		}
+		if _, duplicate := operations[metadata.Operation]; duplicate {
+			t.Fatalf("duplicate operation name %q", metadata.Operation)
+		}
+		commands[metadata.Command], operations[metadata.Operation] = struct{}{}, struct{}{}
+		byCommand, commandOK := reviewIntegrationOperationByCommand(metadata.Command)
+		byName, nameOK := reviewIntegrationOperationByName(metadata.Operation)
+		if !commandOK || !nameOK || byCommand.Operation != metadata.Operation || byName.Command != metadata.Command ||
+			!validReviewIntegrationFailureOperation(metadata.Operation) || reviewLockOperationLabel(metadata.Operation) != metadata.Label {
+			t.Fatalf("operation metadata does not drive every policy lookup: %#v", metadata)
+		}
+		shape := reviewIntegrationOperationFlagShape(metadata.Operation)
+		if shape["contract"] != reviewIntegrationValueFlag {
+			t.Fatalf("operation %q omitted contract flag metadata", metadata.Operation)
+		}
+	}
+	repair, ok := reviewIntegrationOperationByName("review.repair")
+	if !ok || !repair.MutatesAuthority || !repair.JoinOnTimeout || repair.ReadOnlyFlag != "preflight" ||
+		reviewIntegrationOperationMutates(repair, []string{"--preflight=true"}) ||
+		!reviewIntegrationOperationMutates(repair, []string{"--preflight=false"}) {
+		t.Fatalf("repair operation metadata = %#v", repair)
 	}
 }
 
@@ -222,6 +265,97 @@ func TestNegotiatedStartLockFailuresPreservePreMutationRetryTruth(t *testing.T) 
 	}
 }
 
+func TestNegotiatedStatusLockFailuresAreTypedOperationSpecificAndPathFree(t *testing.T) {
+	privatePath := filepath.Join(t.TempDir(), "REVIEW-MAINTENANCE.lock")
+	for _, tt := range []struct {
+		name    string
+		err     error
+		code    string
+		message string
+		retry   bool
+		next    string
+	}{
+		{
+			name: "timeout", err: fmt.Errorf("acquire %s: %w", privatePath, &reviewtransaction.AuthorityLockTimeoutError{Timeout: 2 * time.Second}),
+			code: "authority_lock_timeout", message: "Review STATUS could not acquire the authority lock within the bounded wait.",
+			retry: true, next: "retry_with_bounded_backoff",
+		},
+		{
+			name: "cancelled", err: fmt.Errorf("acquire %s: %w", privatePath, &reviewtransaction.AuthorityLockCancelledError{Cause: context.Canceled}),
+			code: "authority_lock_cancelled", message: "Review STATUS authority lock acquisition was cancelled.", next: "stop",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			failure := newReviewIntegrationFailure("review.status", nil, tt.err)
+			if failure.Code != tt.code || failure.Message != tt.message || failure.Phase != "pre_native" ||
+				failure.MutationOutcome != ReviewMutationNotStarted || failure.RetrySafe != tt.retry ||
+				failure.Replayability != reviewtransaction.ReplayabilityManualActionRequired || failure.NextAction != tt.next {
+				t.Fatalf("STATUS lock failure = %#v", failure)
+			}
+			payload, err := json.Marshal(failure)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(payload, []byte(privatePath)) || bytes.Contains(payload, []byte("Review START")) {
+				t.Fatalf("STATUS lock failure leaked private or wrong-operation detail: %s", payload)
+			}
+			if err := failure.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestNegotiatedStatusUsesRealMaintenanceLockTruth(t *testing.T) {
+	repo := initReviewCLIRepo(t)
+	started := startFacadeReview(t, repo)
+	lockContext, cancelLock := context.WithTimeout(context.Background(), time.Second)
+	defer cancelLock()
+	exclusive, err := reviewtransaction.AcquireReviewMaintenanceExclusive(lockContext, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exclusive.Release()
+
+	originalTimeout := reviewFacadeOperationTimeout
+	t.Cleanup(func() { reviewFacadeOperationTimeout = originalTimeout })
+	args := []string{
+		"status", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", started.LineageID,
+	}
+
+	reviewFacadeOperationTimeout = 3 * time.Second
+	var timeoutOutput bytes.Buffer
+	err = RunReview(args, &timeoutOutput)
+	if err == nil {
+		t.Fatal("STATUS succeeded while exclusive maintenance held")
+	}
+	timeout := decodeReviewIntegrationFailure(t, timeoutOutput.Bytes())
+	if timeout.Code != "authority_lock_timeout" || timeout.MutationOutcome != ReviewMutationNotStarted ||
+		!timeout.RetrySafe || timeout.NextAction != "retry_with_bounded_backoff" {
+		t.Fatalf("real STATUS lock timeout = %#v", timeout)
+	}
+	if strings.Contains(timeoutOutput.String(), repo) {
+		t.Fatalf("real STATUS lock timeout exposed repository path: %s", timeoutOutput.String())
+	}
+	assertNoPrivateReviewOperationFields(t, timeoutOutput.Bytes())
+
+	reviewFacadeOperationTimeout = 50 * time.Millisecond
+	var deadlineOutput bytes.Buffer
+	err = RunReview(args, &deadlineOutput)
+	if err == nil {
+		t.Fatal("STATUS caller deadline succeeded while exclusive maintenance held")
+	}
+	deadline := decodeReviewIntegrationFailure(t, deadlineOutput.Bytes())
+	if deadline.Code != "operation_timeout" || deadline.MutationOutcome != ReviewMutationNotStarted ||
+		deadline.RetrySafe || deadline.NextAction != "stop" {
+		t.Fatalf("STATUS caller deadline = %#v", deadline)
+	}
+	if strings.Contains(deadlineOutput.String(), repo) {
+		t.Fatalf("STATUS caller deadline exposed repository path: %s", deadlineOutput.String())
+	}
+	assertNoPrivateReviewOperationFields(t, deadlineOutput.Bytes())
+}
+
 func TestNegotiatedFacadeAggregateTimeoutPreservesMutationTruth(t *testing.T) {
 	originalRunner := reviewFacadeCommandRunner
 	originalTimeout := reviewFacadeOperationTimeout
@@ -231,13 +365,14 @@ func TestNegotiatedFacadeAggregateTimeoutPreservesMutationTruth(t *testing.T) {
 	})
 	reviewFacadeOperationTimeout = 25 * time.Millisecond
 	for _, tt := range []struct {
-		name          string
-		args          []string
-		phase         string
-		mutation      ReviewMutationOutcome
-		replayability reviewtransaction.Replayability
-		nextAction    string
-		lineage       string
+		name           string
+		args           []string
+		phase          string
+		mutation       ReviewMutationOutcome
+		replayability  reviewtransaction.Replayability
+		nextAction     string
+		lineage        string
+		waitsForWorker bool
 	}{
 		{
 			name: "read only", args: []string{"status", "--contract", ReviewIntegrationContractV1},
@@ -249,13 +384,20 @@ func TestNegotiatedFacadeAggregateTimeoutPreservesMutationTruth(t *testing.T) {
 			phase: "native_running", mutation: ReviewMutationUnknown,
 			replayability: reviewtransaction.ReplayabilityStatusRequired, nextAction: "review.status", lineage: "review-timeout",
 		},
+		{
+			name: "repair execution", args: []string{"repair", "--contract", ReviewIntegrationContractV1, "--preflight=false", "--lineage", "repair-timeout"},
+			phase: "native_running", mutation: ReviewMutationUnknown,
+			replayability: reviewtransaction.ReplayabilityStatusRequired, nextAction: "review.status", lineage: "repair-timeout", waitsForWorker: true,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reviewFacadeCommandRunner = func(context.Context, []string, io.Writer) error { time.Sleep(100 * time.Millisecond); return nil }
 			started := time.Now()
 			var output bytes.Buffer
 			err := RunReview(tt.args, &output)
-			if elapsed := time.Since(started); elapsed > 75*time.Millisecond {
+			if elapsed := time.Since(started); tt.waitsForWorker && elapsed < 75*time.Millisecond {
+				t.Fatalf("aggregate facade timeout returned before mutating worker joined: %s", elapsed)
+			} else if !tt.waitsForWorker && elapsed > 75*time.Millisecond {
 				t.Fatalf("aggregate facade timeout took %s", elapsed)
 			}
 			if err == nil {
@@ -265,6 +407,52 @@ func TestNegotiatedFacadeAggregateTimeoutPreservesMutationTruth(t *testing.T) {
 			if failure.Code != "operation_timeout" || failure.Phase != tt.phase || failure.MutationOutcome != tt.mutation ||
 				failure.RetrySafe || failure.Replayability != tt.replayability || failure.NextAction != tt.nextAction || failure.LineageID != tt.lineage {
 				t.Fatalf("timeout failure = %#v", failure)
+			}
+		})
+	}
+}
+
+func TestNegotiatedRepairProgressFailurePreservesOpaqueReplayTruth(t *testing.T) {
+	base := reviewtransaction.ClassifiedAuthorityRepairExecution{
+		Class:     reviewtransaction.AuthorityRepairClassLegacyV1HistoricalAlias,
+		LineageID: "repair-progress", Revision: "sha256:" + strings.Repeat("a", 64),
+		ChainIdentity:    "sha256:" + strings.Repeat("b", 64),
+		Cause:            reviewtransaction.AuthorityRepairCauseUnsupportedHistoricalV1OperationAlias,
+		Disposition:      reviewtransaction.AuthorityRepairDispositionQuarantineHistoricalAlias,
+		AssessmentDigest: "sha256:" + strings.Repeat("c", 64), RequestDigest: "sha256:" + strings.Repeat("d", 64),
+		RecordIdentity: "sha256:" + strings.Repeat("e", 64),
+	}
+	for _, tt := range []struct {
+		name          string
+		status        string
+		phase         string
+		mutation      ReviewMutationOutcome
+		replayability reviewtransaction.Replayability
+		nextAction    string
+		exactReplay   bool
+	}{
+		{name: "prepared", status: reviewtransaction.CompactReclaimPrepared, phase: "native_running", mutation: ReviewMutationUnknown, replayability: reviewtransaction.ReplayabilityExactReplaySafe, nextAction: "review.repair", exactReplay: true},
+		{name: "committed verified", status: reviewtransaction.CompactReclaimCommitted, phase: "native_committed", mutation: ReviewMutationCommitted, replayability: reviewtransaction.ReplayabilityExactReplaySafe, nextAction: "review.repair", exactReplay: true},
+		{name: "committed unverified", status: reviewtransaction.CompactReclaimCommitted, phase: "native_committed", mutation: ReviewMutationCommitted, replayability: reviewtransaction.ReplayabilityStatusRequired, nextAction: "review.status"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			progress := base
+			progress.Status = tt.status
+			failure := newReviewIntegrationFailure("review.repair", []string{"--lineage", progress.LineageID}, &reviewtransaction.ClassifiedAuthorityRepairProgressError{
+				Progress: progress, ExactReplaySafe: tt.exactReplay, Cause: context.DeadlineExceeded,
+			})
+			if failure.Code != "operation_timeout" || failure.Phase != tt.phase || failure.MutationOutcome != tt.mutation ||
+				failure.Replayability != tt.replayability || failure.NextAction != tt.nextAction || failure.RetrySafe != tt.exactReplay ||
+				failure.LineageID != progress.LineageID || failure.RequestDigest != progress.RequestDigest || failure.ProgressIdentity != progress.RecordIdentity {
+				t.Fatalf("%s repair progress failure = %#v", tt.name, failure)
+			}
+			if err := failure.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			withoutProgress := failure
+			withoutProgress.ProgressIdentity = ""
+			if err := withoutProgress.Validate(); err == nil {
+				t.Fatal("repair progress failure accepted a request digest without its progress identity")
 			}
 		})
 	}

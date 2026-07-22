@@ -71,12 +71,10 @@ func TestStalePristineReviewingLineageHasNoSanctionedExit(t *testing.T) {
 	}
 }
 
-// TestPristineInvalidatedLineagePoisonsInventory reproduces the second #1441
-// deadlock: a successfully invalidated pristine lineage with no recovery
-// successor maps to AuthorityStatusInvalid, forcing Complete=false on the
-// whole inventory forever, with reclaim and reconcile both refusing to
-// retire it.
-func TestPristineInvalidatedLineagePoisonsInventory(t *testing.T) {
+// TestPristineInvalidatedLineageRemainsAuditable proves that a successfully
+// invalidated pristine lineage remains complete inventory authority without
+// becoming usable delivery authority.
+func TestPristineInvalidatedLineageRemainsAuditable(t *testing.T) {
 	repo := initSnapshotRepo(t)
 	writeSnapshotFile(t, repo, "tracked.txt", "base\naccidental change\n")
 	record, store := pristineReviewingFixture(t, repo, "abandon-pristine-invalidated")
@@ -92,8 +90,8 @@ func TestPristineInvalidatedLineagePoisonsInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Complete || report.Authoritative ||
-		!hasAuthorityInventoryStatus(report.Entries, "abandon-pristine-invalidated", AuthorityStatusInvalid) {
+	if !report.Complete || !report.Authoritative || report.Status != AuthorityStatusInvalidated ||
+		!hasAuthorityInventoryStatus(report.Entries, "abandon-pristine-invalidated", AuthorityStatusInvalidated) {
 		t.Fatalf("invalidated lineage inventory = %#v", report)
 	}
 
@@ -249,7 +247,7 @@ func TestAbandonStalePristineReviewingQuarantinesEntryAndRestoresInventory(t *te
 	}
 }
 
-func TestAbandonPristineInvalidatedRestoresInventory(t *testing.T) {
+func TestAbandonPristineInvalidatedPreservesAuthoritativeInventory(t *testing.T) {
 	repo := initSnapshotRepo(t)
 	approvedCompactFixture(t, repo, "abandon-unrelated-approved")
 	writeSnapshotFile(t, repo, "tracked.txt", "base\naccidental change\n")
@@ -269,8 +267,8 @@ func TestAbandonPristineInvalidatedRestoresInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.Complete || before.Authoritative {
-		t.Fatalf("pre-abandon poisoned inventory = %#v", before)
+	if !before.Complete || !before.Authoritative || len(before.Entries) != 2 || before.Entries[0].Status != AuthorityStatusInvalidated {
+		t.Fatalf("pre-abandon invalidated inventory = %#v", before)
 	}
 
 	committed, err := AbandonPristineCompactStore(context.Background(), repo, abandonFixtureRequest(record))

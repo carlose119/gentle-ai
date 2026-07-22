@@ -280,7 +280,7 @@ func ReconcileInvalidRecoveryEdge(ctx context.Context, repo string, request Comp
 	if request.ReconciledAt.IsZero() {
 		request.ReconciledAt = time.Now().UTC()
 	}
-	return quarantineCompactStoreEntry(base, dir, CompactReclaimRecord{
+	return quarantineCompactStoreEntry(ctx, base, dir, CompactReclaimRecord{
 		Schema: CompactReclaimRecordSchema, Status: CompactReclaimPrepared, LineageID: request.SuccessorLineageID,
 		Reason: strings.TrimSpace(request.Reason), Actor: strings.TrimSpace(request.Actor),
 		ReclaimedAt: request.ReconciledAt.UTC(), SourcePath: dir, Residue: residue,

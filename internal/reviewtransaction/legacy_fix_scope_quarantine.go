@@ -169,7 +169,7 @@ func QuarantineHistoricalLegacyFixScope(ctx context.Context, repo string, reques
 	if err := canonicalLegacyFixScopeAuthorityRoots(base); err != nil {
 		return CompactReclaimRecord{}, err
 	}
-	record, err := quarantineCompactStoreEntry(base, dir, CompactReclaimRecord{Schema: CompactReclaimRecordSchema, Status: CompactReclaimPrepared, LineageID: request.LineageID, Reason: strings.TrimSpace(request.Reason), Actor: strings.TrimSpace(request.Actor), ReclaimedAt: request.QuarantinedAt.UTC(), SourcePath: dir, Residue: residue, LegacyFixScopeQuarantine: &proof})
+	record, err := quarantineCompactStoreEntry(ctx, base, dir, CompactReclaimRecord{Schema: CompactReclaimRecordSchema, Status: CompactReclaimPrepared, LineageID: request.LineageID, Reason: strings.TrimSpace(request.Reason), Actor: strings.TrimSpace(request.Actor), ReclaimedAt: request.QuarantinedAt.UTC(), SourcePath: dir, Residue: residue, LegacyFixScopeQuarantine: &proof})
 	if err != nil {
 		return record, err
 	}

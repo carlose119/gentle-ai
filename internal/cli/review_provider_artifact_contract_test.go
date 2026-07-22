@@ -48,6 +48,8 @@ func TestReviewProviderArtifactV2SchemasAreStrictAndBound(t *testing.T) {
 		{name: "result-artifact-v2.schema.json", id: "https://gentle-ai.dev/contracts/review-integration/v1/schemas/result-artifact-v2.schema.json"},
 		{name: "start-v2.schema.json", id: ReviewIntegrationStartSchemaID},
 		{name: "status-v2.schema.json", id: ReviewIntegrationStatusSchemaID},
+		{name: "authority-repair-assessment.schema.json", id: reviewtransaction.AuthorityRepairAssessmentSchemaID},
+		{name: "repair.schema.json", id: ReviewIntegrationRepairSchemaID},
 	}
 	documents := make(map[string]map[string]any, len(tests))
 	for _, tt := range tests {

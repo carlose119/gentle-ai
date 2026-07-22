@@ -30,6 +30,8 @@ COMMANDS
                Normal review path; ordinary authority is compact state plus receipt
   review status [--cwd <repo>]
                Read-only inventory of compact-v2 and shipped legacy-v1 authority
+  review repair --preflight [--cwd <repo>]
+               Classify the complete authority inventory before provider-owned repair
 
 COMPATIBILITY COMMANDS
   review-start --cwd <repo> --lineage <id> --policy-file <path>

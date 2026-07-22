@@ -161,7 +161,7 @@ func AbandonPristineCompactStore(ctx context.Context, repo string, request Compa
 	if request.AbandonedAt.IsZero() {
 		request.AbandonedAt = time.Now().UTC()
 	}
-	return quarantineCompactStoreEntry(base, dir, CompactReclaimRecord{
+	return quarantineCompactStoreEntry(ctx, base, dir, CompactReclaimRecord{
 		Schema: CompactReclaimRecordSchema, Status: CompactReclaimPrepared, LineageID: request.LineageID,
 		Reason: strings.TrimSpace(request.Reason), Actor: strings.TrimSpace(request.Actor),
 		ReclaimedAt: request.AbandonedAt.UTC(), SourcePath: dir, Residue: residue,

@@ -164,6 +164,7 @@ func TestNegotiatedReviewStatusContractAndSchemasAreStrict(t *testing.T) {
 		id   string
 	}{
 		{name: "status-v2.schema.json", id: ReviewIntegrationStatusSchemaID},
+		{name: "authority-repair-assessment.schema.json", id: reviewtransaction.AuthorityRepairAssessmentSchemaID},
 		{name: "projection.schema.json", id: ReviewIntegrationProjectionSchemaID},
 		{name: "targeted-validation-request.schema.json", id: reviewtransaction.TargetedValidationRequestSchemaID},
 	} {
@@ -188,6 +189,7 @@ func TestNegotiatedReviewStatusContractAndSchemasAreStrict(t *testing.T) {
 		{name: "status-v2-unrelated.fixture.json", applicability: reviewtransaction.TargetApplicabilityUnrelated},
 		{name: "status-v2-ambiguous.fixture.json", applicability: reviewtransaction.TargetApplicabilityAmbiguous},
 		{name: "status-v2-corrupted.fixture.json", applicability: reviewtransaction.TargetApplicabilityCorrupted},
+		{name: "status-v2-repair.fixture.json", applicability: reviewtransaction.TargetApplicabilityCorrupted},
 	}
 	for _, item := range fixtures {
 		fixture, readErr := os.ReadFile(filepath.Join(root, "fixtures", item.name))
@@ -284,25 +286,26 @@ func TestActionEligibilityIsOptionalForV1Consumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	startFacadeReview(t, repo)
-	type v1Status struct {
-		Schema         string                                `json:"schema"`
-		Contract       string                                `json:"contract"`
-		Operation      string                                `json:"operation"`
-		Applicability  reviewtransaction.TargetApplicability `json:"applicability"`
-		Authority      *ReviewTargetStatusAuthority          `json:"authority,omitempty"`
-		Receipt        ReviewTargetStatusReceipt             `json:"receipt"`
-		Action         reviewtransaction.TargetStatusAction  `json:"action"`
-		Replayability  reviewtransaction.Replayability       `json:"replayability"`
-		Frozen         *ReviewTargetStatusFrozen             `json:"frozen,omitempty"`
-		TargetIdentity string                                `json:"target_identity"`
-		Projection     ReviewTargetStatusProjection          `json:"projection"`
-		Candidates     []string                              `json:"candidates"`
+	type statusWithoutEligibility struct {
+		Schema         string                                      `json:"schema"`
+		Contract       string                                      `json:"contract"`
+		Operation      string                                      `json:"operation"`
+		Applicability  reviewtransaction.TargetApplicability       `json:"applicability"`
+		Authority      *ReviewTargetStatusAuthority                `json:"authority,omitempty"`
+		Receipt        ReviewTargetStatusReceipt                   `json:"receipt"`
+		Action         reviewtransaction.TargetStatusAction        `json:"action"`
+		Replayability  reviewtransaction.Replayability             `json:"replayability"`
+		Frozen         *ReviewTargetStatusFrozen                   `json:"frozen,omitempty"`
+		TargetIdentity string                                      `json:"target_identity"`
+		Projection     ReviewTargetStatusProjection                `json:"projection"`
+		Repair         reviewtransaction.AuthorityRepairAssessment `json:"repair"`
+		Candidates     []string                                    `json:"candidates"`
 	}
 	var legacyOutput bytes.Buffer
 	if err := RunReview([]string{"status", "--contract", ReviewIntegrationContractV1, "--cwd", repo}, &legacyOutput); err != nil {
 		t.Fatal(err)
 	}
-	var legacy v1Status
+	var legacy statusWithoutEligibility
 	decodeStrictReviewJSON(t, legacyOutput.Bytes(), &legacy)
 	var oldPayload ReviewTargetStatusResult
 	decodeStrictReviewJSON(t, legacyOutput.Bytes(), &oldPayload)

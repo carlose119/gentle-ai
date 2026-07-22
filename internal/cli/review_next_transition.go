@@ -87,6 +87,11 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 				Name: "lineage_selection", Schema: "gentle-ai.review-lineage-selection/v1", CaptureOperation: "external.select_lineage",
 				Arguments: append(reviewTargetArguments(status), ReviewTransitionArgument{Name: "candidates", Value: strings.Join(status.Candidates, ",")}),
 			})
+		case reviewtransaction.TargetApplicabilityCorrupted:
+			if status.Repair.Status == reviewtransaction.AuthorityRepairEligible && status.Repair.Candidate != nil {
+				return reviewRepairTransition(status, input)
+			}
+			return reviewStopTransition("corrupted_or_unverifiable_authority")
 		default:
 			return reviewStopTransition("corrupted_or_unverifiable_authority")
 		}
@@ -241,12 +246,46 @@ func reviewCaptureInput(binding ReviewTransitionBinding, lens string, order int,
 }
 
 type reviewNextTransitionInput struct {
-	Gate                                    reviewtransaction.GateKind
-	Successor, Reason, Actor, Authorization string
-	RepositoryContext                       string
-	ValidationRequest                       *reviewtransaction.TargetedValidationRequest
-	CorrectionForecasted                    bool
-	CaptureContext                          *reviewCaptureContext
+	Gate                                           reviewtransaction.GateKind
+	Successor, Reason, Actor, Authorization        string
+	RepairActor, RepairReason, RepairAuthorization string
+	RepositoryContext                              string
+	ValidationRequest                              *reviewtransaction.TargetedValidationRequest
+	CorrectionForecasted                           bool
+	CaptureContext                                 *reviewCaptureContext
+}
+
+func reviewRepairTransition(status ReviewTargetStatusResult, input reviewNextTransitionInput) ReviewNextTransition {
+	assessment := status.Repair
+	candidate := assessment.Candidate
+	binding := ReviewTransitionBinding{LineageID: candidate.LineageID, Revision: candidate.Revision, TargetIdentity: status.TargetIdentity}
+	providerArguments := []ReviewTransitionArgument{
+		{Name: "class", Value: string(assessment.Class)}, {Name: "lineage", Value: candidate.LineageID},
+		{Name: "expected-revision", Value: candidate.Revision}, {Name: "cause", Value: string(assessment.Cause)},
+		{Name: "disposition", Value: string(assessment.Disposition)}, {Name: "repository-binding", Value: assessment.RepositoryBinding},
+	}
+	request := reviewtransaction.ClassifiedAuthorityRepairRequest{
+		Class: assessment.Class, LineageID: candidate.LineageID, ExpectedRevision: candidate.Revision,
+		Cause: assessment.Cause, Disposition: assessment.Disposition, RepositoryBinding: assessment.RepositoryBinding,
+		Actor: input.RepairActor, Reason: input.RepairReason, MaintainerAuthorization: input.RepairAuthorization,
+	}
+	if reviewtransaction.ValidateClassifiedAuthorityRepairRequest(request, assessment) == nil {
+		arguments := append([]ReviewTransitionArgument{}, providerArguments...)
+		arguments = append(arguments,
+			ReviewTransitionArgument{Name: "actor", Value: input.RepairActor},
+			ReviewTransitionArgument{Name: "reason", Value: input.RepairReason},
+			ReviewTransitionArgument{Name: "maintainer-authorization", Value: "provided"},
+		)
+		return reviewExecuteTransition("repair_authorized", "review.repair", arguments, []ReviewTransitionArgument{
+			{Name: "repair_status", Value: string(reviewtransaction.AuthorityRepairEligible)},
+			{Name: "unique_candidate", Value: "true"}, {Name: "current_head", Value: candidate.Revision},
+			{Name: "repair_authorization", Value: "provided"},
+		}, binding, nil)
+	}
+	return reviewCollectTransition("repair_authorization_required", ReviewTransitionInput{
+		Name: "repair_authorization", Schema: assessment.AuthorizationSchema, CaptureOperation: "external.authorize_repair",
+		Arguments: providerArguments,
+	})
 }
 
 func newReviewCaptureContext(state reviewtransaction.CompactState, revision string, frozen reviewtransaction.FrozenCandidateContext) (*reviewCaptureContext, error) {

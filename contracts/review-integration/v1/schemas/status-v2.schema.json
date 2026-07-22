@@ -14,6 +14,7 @@
     "replayability",
     "target_identity",
     "projection",
+    "repair",
     "candidates"
   ],
   "properties": {
@@ -57,6 +58,7 @@
     },
     "target_identity": { "$ref": "#/$defs/sha256" },
     "projection": { "$ref": "projection.schema.json" },
+    "repair": { "$ref": "authority-repair-assessment.schema.json" },
     "candidates": {
       "type": "array",
       "uniqueItems": true,
@@ -101,7 +103,7 @@
     "transition_execution": {
       "type": "object", "additionalProperties": false, "required": ["operation", "arguments", "preconditions", "binding"],
       "properties": {
-        "operation": { "enum": ["review.start", "review.finalize", "review.recover", "review.validate"] },
+        "operation": { "enum": ["review.start", "review.finalize", "review.recover", "review.repair", "review.validate"] },
         "arguments": { "type": "array", "items": { "$ref": "#/$defs/transition_argument" } },
         "preconditions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/transition_argument" } },
         "binding": { "$ref": "#/$defs/transition_binding" },
@@ -163,7 +165,7 @@
             "additionalProperties": false,
             "required": ["action", "reason_code", "required_inputs"],
             "properties": {
-              "action": { "enum": ["stop", "review.start", "review.finalize", "review.validate", "review.recover"] },
+              "action": { "enum": ["stop", "review.start", "review.finalize", "review.validate", "review.recover", "review.repair"] },
               "reason_code": { "type": "string", "pattern": "^[a-z0-9_]+$" },
               "required_inputs": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9_]+$" } },
               "disposition": { "enum": ["scope_changed", "invalidated", "escalated"] },
@@ -194,7 +196,7 @@
             "additionalProperties": false,
             "required": ["action", "reason_code"],
             "properties": {
-              "action": { "enum": ["review.abandon", "review.finalize", "review.invalidate", "review.quarantine-legacy", "review.reclaim", "review.reconcile-authority", "review.reconcile-authority-batch", "review.recover", "review.start", "review.validate"] },
+              "action": { "enum": ["review.abandon", "review.finalize", "review.invalidate", "review.quarantine-legacy", "review.reclaim", "review.reconcile-authority", "review.reconcile-authority-batch", "review.recover", "review.repair", "review.start", "review.validate"] },
               "reason_code": { "type": "string", "pattern": "^[a-z0-9_]+$" }
             }
           }

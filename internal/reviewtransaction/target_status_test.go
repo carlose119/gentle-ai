@@ -688,6 +688,17 @@ func TestTargetStatusResultHasNoAuthorityPathFields(t *testing.T) {
 	_ = filepath.Separator
 }
 
+func TestCompactAuthorityLockFailuresAreOperational(t *testing.T) {
+	for _, err := range []error{
+		&AuthorityLockTimeoutError{Timeout: 2 * time.Second},
+		&AuthorityLockCancelledError{Cause: context.Canceled},
+	} {
+		if !compactAuthorityOperationalFailure(err) {
+			t.Fatalf("authority lock failure classified as semantic corruption: %T", err)
+		}
+	}
+}
+
 // TestRecoveryStatusNamesTheDispositionRecoveryAccepts pins issue #1469 Case B:
 // every `recover` recommendation must name the --disposition that
 // ValidateCompactRecovery actually accepts, so an operator never has to guess

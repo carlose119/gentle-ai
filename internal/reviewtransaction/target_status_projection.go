@@ -52,7 +52,7 @@ func loadCompactTargetStatusCandidates(ctx context.Context, repo, lineageID stri
 	selected := []CompactStore{}
 	if lineageID == "" {
 		for _, store := range stores {
-			record, loadErr := store.Load()
+			record, loadErr := store.LoadContext(ctx)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -71,7 +71,7 @@ func loadCompactTargetStatusCandidates(ctx context.Context, repo, lineageID stri
 			if _, seen := records[cursor.lineageID]; seen {
 				return nil, errors.New("invalid compact authority graph: recovery cycle")
 			}
-			record, loadErr := cursor.Load()
+			record, loadErr := cursor.LoadContext(ctx)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -122,7 +122,7 @@ func loadStableCompactTargetStatusCandidate(ctx context.Context, store CompactSt
 		if err := ctx.Err(); err != nil {
 			return targetStatusCandidate{}, err
 		}
-		observed, loadErr := store.Load()
+		observed, loadErr := store.LoadContext(ctx)
 		if loadErr != nil {
 			return targetStatusCandidate{}, loadErr
 		}

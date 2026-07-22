@@ -15,12 +15,32 @@ import (
 const CompactReclaimRecordSchema = "gentle-ai.review-reclaim-record/v1"
 
 const (
+	ClassifiedAuthorityRepairAuditSchema = "gentle-ai.review-classified-authority-repair-audit/v1"
+	ClassifiedAuthorityRepairRoute       = "classified_authority_repair"
+)
+
+const (
 	CompactReclaimPrepared  = "prepared"
 	CompactReclaimCommitted = "committed"
 )
 
 var reclaimQuarantineResidue = os.Rename
 var persistReclaimRecord = persistCompactReclaimRecord
+var compactReclaimPhaseHook = func(ctx context.Context, _ string, _ CompactReclaimRecord) error { return ctx.Err() }
+
+const (
+	compactReclaimPhasePrepared  = "prepared"
+	compactReclaimPhaseRenamed   = "renamed"
+	compactReclaimPhaseCommitted = "committed"
+)
+
+type ClassifiedAuthorityRepairAudit struct {
+	Schema           string                    `json:"schema"`
+	Route            string                    `json:"route"`
+	Assessment       AuthorityRepairAssessment `json:"assessment"`
+	AssessmentDigest string                    `json:"assessment_digest"`
+	RequestDigest    string                    `json:"request_digest"`
+}
 
 // CompactReclaimRequest identifies one explicit incomplete compact-v2 store
 // entry to quarantine, together with the maintainer audit inputs.
@@ -66,6 +86,10 @@ type CompactReclaimRecord struct {
 	// LegacyAliasRepair carries the natively re-derived proof for the narrow
 	// historical v1 operation-alias quarantine.
 	LegacyAliasRepair *LegacyAliasRepairProof `json:"legacy_alias_repair,omitempty"`
+	// ClassifiedAuthorityRepair binds a generic review.repair quarantine to the
+	// exact provider assessment and authorization-free request digest. Records
+	// created by the compatibility command intentionally omit this proof.
+	ClassifiedAuthorityRepair *ClassifiedAuthorityRepairAudit `json:"classified_authority_repair,omitempty"`
 	// LegacyFixScopeQuarantine carries the proof for the narrowly authorized
 	// complete-fix scope-expansion quarantine.
 	LegacyFixScopeQuarantine *LegacyFixScopeQuarantineProof `json:"legacy_fix_scope_quarantine,omitempty"`
@@ -137,7 +161,7 @@ func ReclaimIncompleteCompactStore(ctx context.Context, repo string, request Com
 	if request.ReclaimedAt.IsZero() {
 		request.ReclaimedAt = time.Now().UTC()
 	}
-	return quarantineCompactStoreEntry(base, dir, CompactReclaimRecord{
+	return quarantineCompactStoreEntry(ctx, base, dir, CompactReclaimRecord{
 		Schema: CompactReclaimRecordSchema, Status: CompactReclaimPrepared, LineageID: request.LineageID,
 		Reason: strings.TrimSpace(request.Reason), Actor: strings.TrimSpace(request.Actor),
 		ReclaimedAt: request.ReclaimedAt.UTC(), SourcePath: dir, Residue: residue,
@@ -149,7 +173,10 @@ func ReclaimIncompleteCompactStore(ctx context.Context, repo string, request Com
 // rename the entry into residue/, then rewrite the record as committed. On
 // partial failure after the prepared record persisted, it returns the
 // populated prepared record alongside a non-nil error.
-func quarantineCompactStoreEntry(base, dir string, record CompactReclaimRecord) (CompactReclaimRecord, error) {
+func quarantineCompactStoreEntry(ctx context.Context, base, dir string, record CompactReclaimRecord) (CompactReclaimRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return CompactReclaimRecord{}, err
+	}
 	quarantineRoot := filepath.Join(base, "quarantine")
 	if err := ensureCanonicalReviewQuarantineRoot(base, quarantineRoot); err != nil {
 		return CompactReclaimRecord{}, err
@@ -183,6 +210,9 @@ func quarantineCompactStoreEntry(base, dir string, record CompactReclaimRecord) 
 	if err := persistReclaimRecord(record); err != nil {
 		return CompactReclaimRecord{}, cleanupUnprepared(err)
 	}
+	if err := compactReclaimPhaseHook(ctx, compactReclaimPhasePrepared, record); err != nil {
+		return record, fmt.Errorf("reclaim prepared before residue mutation: %w", err)
+	}
 	if err := reclaimQuarantineResidue(dir, filepath.Join(quarantineDir, "residue")); err != nil {
 		return record, fmt.Errorf("reclaim was prepared at %s but quarantining the residue failed: %w", quarantineDir, err)
 	}
@@ -192,10 +222,16 @@ func quarantineCompactStoreEntry(base, dir string, record CompactReclaimRecord) 
 	if err := SyncReviewDirectory(quarantineDir); err != nil {
 		return record, fmt.Errorf("residue was quarantined at %s but syncing the quarantine directory failed: %w", quarantineDir, err)
 	}
+	if err := compactReclaimPhaseHook(ctx, compactReclaimPhaseRenamed, record); err != nil {
+		return record, fmt.Errorf("residue was quarantined before audit commit: %w", err)
+	}
 	committed := record
 	committed.Status = CompactReclaimCommitted
 	if err := persistReclaimRecord(committed); err != nil {
 		return record, fmt.Errorf("residue was quarantined at %s but the reclaim audit record could not be marked committed: %w", quarantineDir, err)
+	}
+	if err := compactReclaimPhaseHook(ctx, compactReclaimPhaseCommitted, committed); err != nil {
+		return committed, fmt.Errorf("reclaim audit committed before readback: %w", err)
 	}
 	return committed, nil
 }

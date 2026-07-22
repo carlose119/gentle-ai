@@ -42,6 +42,7 @@ type ReviewTargetStatusResult struct {
 	Frozen            *ReviewTargetStatusFrozen                    `json:"frozen,omitempty"`
 	TargetIdentity    string                                       `json:"target_identity"`
 	Projection        ReviewTargetStatusProjection                 `json:"projection"`
+	Repair            reviewtransaction.AuthorityRepairAssessment  `json:"repair"`
 	Candidates        []string                                     `json:"candidates"`
 	Reconciliation    *ReviewFinalizeReconciliation                `json:"reconciliation,omitempty"`
 	Eligibility       *ReviewActionEligibility                     `json:"eligibility,omitempty"`
@@ -86,6 +87,22 @@ var reviewManagedActions = []string{
 	"review.reconcile-authority",
 	"review.reconcile-authority-batch",
 	"review.recover",
+	"review.repair",
+	"review.start",
+	"review.validate",
+}
+
+// reviewFinalizeManagedActions preserves the published operation/v1 action
+// eligibility surface. Classified repair is advertised only by status/v2.
+var reviewFinalizeManagedActions = []string{
+	"review.abandon",
+	"review.finalize",
+	"review.invalidate",
+	"review.quarantine-legacy",
+	"review.reclaim",
+	"review.reconcile-authority",
+	"review.reconcile-authority-batch",
+	"review.recover",
 	"review.start",
 	"review.validate",
 }
@@ -94,6 +111,7 @@ const (
 	reviewActionEligibleCurrent             = "eligible_current_target"
 	reviewActionEligibleEscalatedRecovery   = "eligible_recovery_escalated"
 	reviewActionEligibleRecovery            = "eligible_recovery"
+	reviewActionEligibleClassifiedRepair    = "eligible_classified_authority_repair"
 	reviewActionForbiddenNotSelected        = "forbidden_not_selected_by_native_status"
 	reviewActionForbiddenAmbiguous          = "forbidden_ambiguous_authority"
 	reviewActionForbiddenCorrupted          = "forbidden_corrupted_authority"
@@ -150,6 +168,7 @@ func newReviewTargetStatusResult(native reviewtransaction.TargetStatusResult) Re
 		Applicability: native.Applicability, Action: native.Action, ActionDisposition: native.ActionDisposition,
 		Replayability:  native.Replayability,
 		TargetIdentity: native.TargetIdentity, Candidates: append([]string{}, native.CandidateLineageIDs...),
+		Repair: reviewtransaction.UnsupportedAuthorityRepairAssessment(),
 		Projection: ReviewTargetStatusProjection{
 			Schema: ReviewIntegrationProjectionSchema, Kind: native.Projection.Kind, Projection: facadeProjection(native.Projection.Projection),
 			BaseTree: native.Projection.BaseTree, InitialReviewTree: native.Projection.InitialReviewTree,
@@ -212,6 +231,13 @@ func newReviewActionEligibility(status ReviewTargetStatusResult) *ReviewActionEl
 				Revision:  status.Authority.Revision, TargetIdentity: status.TargetIdentity,
 			}
 		}
+	case reviewtransaction.TargetStatusActionRepairAuthority:
+		if status.Repair.Status == reviewtransaction.AuthorityRepairEligible && status.Repair.Candidate != nil {
+			allowed.Action, allowed.ReasonCode = "review.repair", reviewActionEligibleClassifiedRepair
+			allowed.RequiredInputs = []string{"actor", "reason", "maintainer_authorization"}
+		} else {
+			allowed.Action, allowed.ReasonCode = "stop", reviewActionForbiddenManualIntervention
+		}
 	default:
 		allowed.Action, allowed.ReasonCode = "stop", reviewActionForbiddenManualIntervention
 	}
@@ -242,8 +268,8 @@ func newReviewActionEligibility(status ReviewTargetStatusResult) *ReviewActionEl
 }
 
 func reviewStopEligibility(reason string, requiredInputs []string) *ReviewActionEligibility {
-	forbidden := make([]ReviewForbiddenAction, len(reviewManagedActions))
-	for index, action := range reviewManagedActions {
+	forbidden := make([]ReviewForbiddenAction, len(reviewFinalizeManagedActions))
+	for index, action := range reviewFinalizeManagedActions {
 		forbidden[index] = ReviewForbiddenAction{Action: action, ReasonCode: reason}
 	}
 	return &ReviewActionEligibility{
@@ -258,6 +284,13 @@ func (result ReviewTargetStatusResult) Validate() error {
 	}
 	if !validReviewCapabilitySHA256(result.TargetIdentity) || result.Candidates == nil {
 		return errors.New("invalid negotiated review target identity")
+	}
+	if err := result.Repair.Validate(); err != nil {
+		return err
+	}
+	if result.Repair.Status == reviewtransaction.AuthorityRepairEligible &&
+		(result.Applicability != reviewtransaction.TargetApplicabilityCorrupted || result.Action != reviewtransaction.TargetStatusActionRepairAuthority) {
+		return errors.New("eligible authority repair is not bound to corrupted status")
 	}
 	if err := result.Projection.Validate(); err != nil {
 		return err
@@ -386,6 +419,11 @@ func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
 	if result.NextTransition.Execute != nil && result.NextTransition.Execute.Binding.TargetIdentity != result.TargetIdentity {
 		return errors.New("negotiated status execution target differs from the current target identity")
 	}
+	if result.Repair.Status == reviewtransaction.AuthorityRepairEligible {
+		if err := result.validateRepairNextTransition(); err != nil {
+			return err
+		}
+	}
 	if result.NextTransition.Collect == nil {
 		return nil
 	}
@@ -399,6 +437,59 @@ func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
 			!reflect.DeepEqual(manifestPathsForStatus(*input.ChangedPathManifest), result.Projection.Paths) {
 			return errors.New("negotiated status capture target differs from the frozen target identity")
 		}
+	}
+	return nil
+}
+
+func (result ReviewTargetStatusResult) validateRepairNextTransition() error {
+	transition := result.NextTransition
+	assessment, candidate := result.Repair, result.Repair.Candidate
+	if transition == nil || candidate == nil {
+		return errors.New("eligible authority repair lacks a classified transition")
+	}
+	provider := map[string]string{
+		"class": string(assessment.Class), "lineage": candidate.LineageID,
+		"expected-revision": candidate.Revision, "cause": string(assessment.Cause),
+		"disposition": string(assessment.Disposition), "repository-binding": assessment.RepositoryBinding,
+	}
+	switch transition.Kind {
+	case reviewNextTransitionCollect:
+		if transition.ReasonCode != "repair_authorization_required" || transition.Collect == nil || len(transition.Collect.Inputs) != 1 {
+			return errors.New("classified repair authorization transition is incomplete")
+		}
+		input := transition.Collect.Inputs[0]
+		arguments, err := reviewTransitionArgumentMap(input.Arguments)
+		if err != nil || input.Name != "repair_authorization" || input.Schema != assessment.AuthorizationSchema ||
+			input.CaptureOperation != "external.authorize_repair" || !reflect.DeepEqual(arguments, provider) {
+			return errors.New("classified repair authorization transition is not provider-bound")
+		}
+	case reviewNextTransitionExecute:
+		if transition.ReasonCode != "repair_authorized" || transition.Execute == nil || transition.Execute.Operation != "review.repair" ||
+			transition.Execute.Binding.LineageID != candidate.LineageID || transition.Execute.Binding.Revision != candidate.Revision {
+			return errors.New("classified repair execution transition is incomplete")
+		}
+		arguments, err := reviewTransitionArgumentMap(transition.Execute.Arguments)
+		if err != nil || len(arguments) != len(provider)+3 {
+			return errors.New("classified repair execution arguments are incomplete")
+		}
+		for name, value := range provider {
+			if arguments[name] != value {
+				return errors.New("classified repair execution arguments differ from provider assessment")
+			}
+		}
+		if strings.TrimSpace(arguments["actor"]) == "" || strings.TrimSpace(arguments["reason"]) == "" || arguments["maintainer-authorization"] != "provided" {
+			return errors.New("classified repair execution exposes or omits authorization state")
+		}
+		preconditions, err := reviewTransitionArgumentMap(transition.Execute.Preconditions)
+		wantPreconditions := map[string]string{
+			"repair_status": string(reviewtransaction.AuthorityRepairEligible), "unique_candidate": "true",
+			"current_head": candidate.Revision, "repair_authorization": "provided",
+		}
+		if err != nil || !reflect.DeepEqual(preconditions, wantPreconditions) {
+			return errors.New("classified repair execution preconditions are incomplete")
+		}
+	default:
+		return errors.New("eligible authority repair may only collect authorization or execute repair")
 	}
 	return nil
 }
@@ -495,7 +586,7 @@ func (transition ReviewNextTransition) Validate() error {
 		if transition.Collect != nil || transition.Execute == nil || transition.Execute.Arguments == nil || len(transition.Execute.Preconditions) == 0 || !validReviewCapabilitySHA256(transition.Execute.Binding.TargetIdentity) {
 			return errors.New("execution transition is incomplete")
 		}
-		if transition.Execute.Operation != "review.start" && transition.Execute.Operation != "review.finalize" && transition.Execute.Operation != "review.recover" && transition.Execute.Operation != "review.validate" || transition.Execute.Operation != "review.start" && (strings.TrimSpace(transition.Execute.Binding.LineageID) == "" || !validReviewCapabilitySHA256(transition.Execute.Binding.Revision)) {
+		if transition.Execute.Operation != "review.start" && transition.Execute.Operation != "review.finalize" && transition.Execute.Operation != "review.recover" && transition.Execute.Operation != "review.repair" && transition.Execute.Operation != "review.validate" || transition.Execute.Operation != "review.start" && (strings.TrimSpace(transition.Execute.Binding.LineageID) == "" || !validReviewCapabilitySHA256(transition.Execute.Binding.Revision)) {
 			return errors.New("execution transition operation or binding is invalid")
 		}
 		if transition.Execute.Binding.RepositoryContext != "" && reviewtransaction.ValidateReviewRepositoryContextHandle(transition.Execute.Binding.RepositoryContext) != nil {
@@ -579,7 +670,7 @@ func (eligibility ReviewActionEligibility) ValidateFinalize() error {
 		}
 		seen[forbidden.Action] = true
 	}
-	for _, action := range reviewManagedActions {
+	for _, action := range reviewFinalizeManagedActions {
 		if !seen[action] {
 			return errors.New("finalize action eligibility does not classify every managed action")
 		}

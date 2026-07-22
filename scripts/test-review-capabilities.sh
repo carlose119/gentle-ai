@@ -38,6 +38,11 @@ assert document["executable"]["evidence"] == "self-reported"
 assert document["executable"]["verification"] == "compare-with-published-manifest"
 assert re.fullmatch(r"sha256:[0-9a-f]{64}", document["executable"]["sha256"])
 features = {feature["name"]: feature for feature in document["features"]["optional"]}
+assert features["classified_authority_repair"] == {
+    "name": "classified_authority_repair",
+    "supported": True,
+    "requires": ["native_next_transition", "uniform_failure_envelope"],
+}
 assert features["native_frozen_candidate_context"] == {
     "name": "native_frozen_candidate_context",
     "supported": True,
@@ -71,6 +76,9 @@ assert features["validating_result_reopen"] == {
 assert "gentle-ai.review-artifact-subject/v1" in document["schemas"]
 assert "gentle-ai.review-admitted-result/v1" in document["schemas"]
 assert "gentle-ai.review-targeted-validation-request/v1" in document["schemas"]
+assert "gentle-ai.review-authority-repair-assessment/v1" in document["schemas"]
+assert "gentle-ai.review-integration.repair/v1" in document["schemas"]
+assert "review.repair" in document["operations"]
 assert list(outside.iterdir()) == []
 
 def keys(value):

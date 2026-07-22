@@ -19,16 +19,20 @@ var probeExistingStoreLock = tryLockFile
 type AuthorityStatus string
 
 const (
-	AuthorityStatusClean      AuthorityStatus = "clean"
-	AuthorityStatusActive     AuthorityStatus = "active"
-	AuthorityStatusApproved   AuthorityStatus = "approved"
-	AuthorityStatusEscalated  AuthorityStatus = "escalated"
-	AuthorityStatusInvalid    AuthorityStatus = "invalid"
-	AuthorityStatusIncomplete AuthorityStatus = "incomplete-store-entry"
-	AuthorityStatusReset      AuthorityStatus = "reset-in-progress"
-	AuthorityStatusSuperseded AuthorityStatus = "superseded"
-	AuthorityStatusRecovered  AuthorityStatus = "recovered"
-	AuthorityStatusCollision  AuthorityStatus = "same-lineage-mixed-collision"
+	AuthorityStatusClean     AuthorityStatus = "clean"
+	AuthorityStatusActive    AuthorityStatus = "active"
+	AuthorityStatusApproved  AuthorityStatus = "approved"
+	AuthorityStatusEscalated AuthorityStatus = "escalated"
+	AuthorityStatusInvalid   AuthorityStatus = "invalid"
+	// AuthorityStatusInvalidated marks a structurally valid terminal
+	// StateInvalidated record. It remains auditable without poisoning inventory
+	// completeness, but it never qualifies as delivery or gate authority.
+	AuthorityStatusInvalidated AuthorityStatus = "invalidated"
+	AuthorityStatusIncomplete  AuthorityStatus = "incomplete-store-entry"
+	AuthorityStatusReset       AuthorityStatus = "reset-in-progress"
+	AuthorityStatusSuperseded  AuthorityStatus = "superseded"
+	AuthorityStatusRecovered   AuthorityStatus = "recovered"
+	AuthorityStatusCollision   AuthorityStatus = "same-lineage-mixed-collision"
 	// AuthorityStatusHistorical marks a structurally valid terminal legacy-v1
 	// chain that predates the receipt contract: its receipt file is absent
 	// (never corrupt or mismatched). Such chains stay inventory-readable
@@ -242,7 +246,7 @@ func inventoryLineage(ctx context.Context, repo string, version AuthorityVersion
 			return entry, locks
 		}
 		store := CompactStore{Dir: path, lineageID: lineage, repo: repo}
-		record, err := store.Load()
+		record, err := store.LoadContext(ctx)
 		if err != nil {
 			entry.Status, entry.Problems = AuthorityStatusInvalid, []string{err.Error()}
 			return entry, locks
@@ -304,7 +308,7 @@ func authorityStatusForState(state State) AuthorityStatus {
 	case StateEscalated:
 		return AuthorityStatusEscalated
 	case StateInvalidated:
-		return AuthorityStatusInvalid
+		return AuthorityStatusInvalidated
 	default:
 		return AuthorityStatusActive
 	}
@@ -366,7 +370,7 @@ func markCompactGraph(report *AuthorityStatusReport) {
 	for index := range report.Entries {
 		entry := &report.Entries[index]
 		if entry.Version == AuthorityVersionCompact && entry.Status != AuthorityStatusReset && entry.Status != AuthorityStatusIncomplete &&
-			(entry.Status != AuthorityStatusInvalid || entry.State == StateInvalidated && len(entry.Problems) == 0) {
+			entry.Status != AuthorityStatusInvalid {
 			byLineage[entry.LineageID] = index
 		}
 	}
@@ -397,8 +401,7 @@ func markCompactGraph(report *AuthorityStatusReport) {
 			}
 			continue
 		}
-		if predecessor, ok := byLineage[lineage]; ok && (report.Entries[predecessor].Status != AuthorityStatusInvalid ||
-			report.Entries[predecessor].State == StateInvalidated && len(report.Entries[predecessor].Problems) == 0) {
+		if predecessor, ok := byLineage[lineage]; ok && report.Entries[predecessor].Status != AuthorityStatusInvalid {
 			report.Entries[predecessor].Status = AuthorityStatusSuperseded
 		}
 	}

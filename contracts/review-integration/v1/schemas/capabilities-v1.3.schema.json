@@ -129,14 +129,15 @@
     },
     "operations": {
       "type": "array",
-      "minItems": 6,
-      "maxItems": 6,
+      "minItems": 7,
+      "maxItems": 7,
       "uniqueItems": true,
       "items": {
         "enum": [
           "review.bind_sdd",
           "review.capabilities",
           "review.finalize",
+          "review.repair",
           "review.start",
           "review.status",
           "review.validate"
@@ -172,19 +173,21 @@
     },
     "schemas": {
       "type": "array",
-      "minItems": 17,
-      "maxItems": 17,
+      "minItems": 19,
+      "maxItems": 19,
       "uniqueItems": true,
       "items": {
         "enum": [
           "gentle-ai.review-admitted-result/v1",
           "gentle-ai.review-artifact-subject/v1",
+          "gentle-ai.review-authority-repair-assessment/v1",
           "gentle-ai.review-authority-status/v1",
           "gentle-ai.review-gate-request/v1",
           "gentle-ai.review-integration.capabilities/v1.3",
           "gentle-ai.review-integration.failure/v1",
           "gentle-ai.review-integration.operation/v1",
           "gentle-ai.review-integration.projection/v1",
+          "gentle-ai.review-integration.repair/v1",
           "gentle-ai.review-integration.start/v2",
           "gentle-ai.review-integration.status/v2",
           "gentle-ai.review-receipt/v1",
@@ -215,8 +218,8 @@
         },
         "optional": {
           "type": "array",
-          "minItems": 13,
-          "maxItems": 13,
+          "minItems": 14,
+          "maxItems": 14,
           "items": {
             "$ref": "#/$defs/feature"
           }
@@ -326,6 +329,7 @@
           "enum": [
             "base_ref_workspace_overlay",
             "bounded_process_waits",
+            "classified_authority_repair",
             "compact_v2_authority",
             "exact_gate_receipt_discovery",
             "exact_receipt_replay",

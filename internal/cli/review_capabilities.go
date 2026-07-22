@@ -179,12 +179,10 @@ func buildReviewCapabilities() (ReviewCapabilitiesResult, error) {
 
 func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 	return ReviewCapabilitiesResult{
-		Schema:   ReviewIntegrationCapabilitiesSchema,
-		Contract: ReviewIntegrationContractV1,
-		Protocol: ReviewCapabilitiesProtocol{Major: 1, Minor: 3},
-		Operations: []string{
-			"review.bind_sdd", "review.capabilities", "review.finalize", "review.start", "review.status", "review.validate",
-		},
+		Schema:     ReviewIntegrationCapabilitiesSchema,
+		Contract:   ReviewIntegrationContractV1,
+		Protocol:   ReviewCapabilitiesProtocol{Major: 1, Minor: 3},
+		Operations: reviewIntegrationOperationNames(),
 		Gates: []string{
 			string(reviewtransaction.GatePostApply), string(reviewtransaction.GatePreCommit), string(reviewtransaction.GatePrePush),
 			string(reviewtransaction.GatePrePR), string(reviewtransaction.GateRelease),
@@ -193,12 +191,14 @@ func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 		Schemas: []string{
 			reviewtransaction.AdmittedReviewerResultSchema,
 			reviewtransaction.ArtifactSubjectSchema,
+			reviewtransaction.AuthorityRepairAssessmentSchema,
 			reviewtransaction.ReviewAuthorityStatusSchema,
 			reviewtransaction.GateRequestSchema,
 			ReviewIntegrationCapabilitiesSchema,
 			ReviewIntegrationFailureSchema,
 			ReviewIntegrationOperationSchema,
 			ReviewIntegrationProjectionSchema,
+			ReviewIntegrationRepairSchema,
 			ReviewIntegrationStartSchema,
 			ReviewIntegrationStatusSchema,
 			reviewtransaction.ReceiptSchema,
@@ -225,6 +225,7 @@ func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 			Optional: []ReviewCapabilityFeature{
 				{Name: "base_ref_workspace_overlay", Supported: true, Requires: []string{"immutable_snapshot", "restart_safe_projection"}},
 				{Name: "bounded_process_waits", Supported: true, Requires: []string{"uniform_failure_envelope"}},
+				{Name: "classified_authority_repair", Supported: true, Requires: []string{"native_next_transition", "uniform_failure_envelope"}},
 				{Name: "exact_gate_receipt_discovery", Supported: true, Requires: []string{"five_delivery_gates"}},
 				{Name: "native_frozen_candidate_context", Supported: true, Requires: []string{"immutable_snapshot"}},
 				{Name: "native_low_risk_verification", Supported: true, Requires: []string{"compact_v2_authority"}},
