@@ -232,6 +232,15 @@ func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRe
 		Disposition: request.Disposition, Reason: strings.TrimSpace(request.Reason), Actor: strings.TrimSpace(request.Actor),
 		RecoveredAt: request.RecoveredAt.UTC(), MaintainerAuthorization: strings.TrimSpace(request.MaintainerAuthorization),
 	}
+	if request.Disposition == RecoveryEscalated {
+		evidence, eligible, evidenceErr := deriveCompactRecoveredEvidence(ctx, successorStore.repo, predecessorStore, predecessor, request.Successor)
+		if evidenceErr != nil {
+			return CompactRecord{}, evidenceErr
+		}
+		if eligible {
+			importCompactRecoveredEvidence(&request.Successor, predecessor.State, evidence)
+		}
+	}
 	stores, err := DiscoverCompactStores(ctx, repo)
 	if err != nil {
 		return CompactRecord{}, err
@@ -257,8 +266,12 @@ func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRe
 	if err := request.Successor.Validate(); err != nil {
 		return CompactRecord{}, err
 	}
-	if !compactPristineReviewing(request.Successor) || len(request.Successor.CorrectionAttempts) != 0 || request.Successor.CumulativeCorrectionLines != 0 {
-		return CompactRecord{}, errors.New("recovery successor must start as a fresh reviewing authority")
+	if request.Successor.Recovery.Evidence == nil {
+		if !compactPristineReviewing(request.Successor) || len(request.Successor.CorrectionAttempts) != 0 || request.Successor.CumulativeCorrectionLines != 0 {
+			return CompactRecord{}, errors.New("recovery successor must start as a fresh reviewing authority")
+		}
+	} else if request.Successor.State != StateValidating {
+		return CompactRecord{}, errors.New("recovery successor with imported evidence must start in validating state")
 	}
 	if err := validateCompactRecoveryEdge(predecessor, request.Successor); err != nil {
 		return CompactRecord{}, err
@@ -362,6 +375,15 @@ func validateCompactRecoveryEdge(predecessor CompactRecord, successor CompactSta
 			return errors.New("recovery requires an invalidated predecessor")
 		}
 	case RecoveryEscalated:
+		if recovery.Evidence != nil {
+			if recovery.MaintainerAuthorization != compactRecoveryAuthorizationBinding(predecessor.State.LineageID, predecessor.Revision, successor.InitialSnapshot.Identity, recovery.Actor, recovery.Reason) {
+				return compactRecoveryAuthorizationError(successor.InitialSnapshot)
+			}
+			if err := validateCompactRecoveredEvidenceEdge(predecessor, successor); err != nil {
+				return err
+			}
+			break
+		}
 		historicalFailedValidator := compactHistoricalFailedValidator(predecessor.State)
 		if predecessor.State.State != StateEscalated && !historicalFailedValidator {
 			return errors.New("recovery requires an escalated predecessor")
@@ -1160,7 +1182,7 @@ func (store CompactStore) replaceContextGuarded(ctx context.Context, expectedRev
 		if operation != "review/start" || next.State != StateReviewing {
 			return "", fmt.Errorf("%w: compact authority must start in reviewing state", ErrInvalidSuccessor)
 		}
-	} else if err := validateCompactSuccessor(current.State, next, operation); err != nil {
+	} else if err := validateCompactSuccessor(current.Revision, current.State, next, operation); err != nil {
 		return "", err
 	}
 	if store.repo != "" {
@@ -1190,7 +1212,7 @@ func (store CompactStore) replaceContextGuarded(ctx context.Context, expectedRev
 
 // CaptureReviewerResult revalidates the reviewing binding while holding shared
 // maintenance access and the compact version lock before publishing an artifact.
-func (store CompactStore) CaptureReviewerResult(target, lens string, order int, publish func(CompactState) error) error {
+func (store CompactStore) CaptureReviewerResult(expectedRevision, target, lens string, order int, publish func(CompactState) error) error {
 	deadline := time.NewTimer(maintenanceLockTimeout)
 	defer deadline.Stop()
 	var lock *storeLock
@@ -1215,7 +1237,7 @@ func (store CompactStore) CaptureReviewerResult(target, lens string, order int, 
 		return err
 	}
 	state := record.State
-	if state.State != StateReviewing || state.InitialSnapshot.Identity != target || order < 0 || order >= len(state.SelectedLenses) || state.SelectedLenses[order] != lens {
+	if record.Revision != expectedRevision || state.State != StateReviewing || state.InitialSnapshot.Identity != target || order < 0 || order >= len(state.SelectedLenses) || state.SelectedLenses[order] != lens {
 		return errors.New("capture binding does not match the current reviewing authority")
 	}
 	return publish(state)
@@ -1254,6 +1276,22 @@ func validateCompactRepositoryEvidence(ctx context.Context, repo string, current
 			}
 		}
 	}
+	if operation == CompactResultReopenOperation {
+		if current == nil || len(next.ResultReopens) != len(current.State.ResultReopens)+1 {
+			return errors.New("reviewer result reopen lacks an exact predecessor authority")
+		}
+		reopen := next.ResultReopens[len(next.ResultReopens)-1]
+		request := CompactResultReopenRequest{
+			LineageID:        current.State.LineageID,
+			ExpectedRevision: current.Revision,
+			TargetIdentity:   current.State.InitialSnapshot.Identity,
+			Reason:           reopen.Reason,
+			Actor:            reopen.Actor,
+		}
+		if reopen.MaintainerAuthorization != CompactResultReopenAuthorization(repo, request, reopen.Quarantined, reopen.Retained) {
+			return errors.New("reviewer result reopen does not carry the exact maintainer authorization")
+		}
+	}
 	if operation == "review/invalidate" {
 		if err := rebuildCurrentSnapshotEvidence(ctx, repo, next.InitialSnapshot); err != nil {
 			return err
@@ -1262,7 +1300,7 @@ func validateCompactRepositoryEvidence(ctx context.Context, repo string, current
 	return nil
 }
 
-func validateCompactSuccessor(previous, next CompactState, operation string) error {
+func validateCompactSuccessor(previousRevision string, previous, next CompactState, operation string) error {
 	if previous.LineageID != next.LineageID || previous.Generation != next.Generation ||
 		!snapshotsEqual(previous.InitialSnapshot, next.InitialSnapshot) || !equalStrings(previous.GenesisPaths, next.GenesisPaths) ||
 		previous.PolicyHash != next.PolicyHash || previous.RiskLevel != next.RiskLevel ||
@@ -1319,6 +1357,34 @@ func validateCompactSuccessor(previous, next CompactState, operation string) err
 		expected.ResultDispositions = next.ResultDispositions
 		if !compactStateEqual(expected, next) {
 			return fmt.Errorf("%w: reviewer result disposition changed unrelated state", ErrInvalidSuccessor)
+		}
+	case CompactResultReopenOperation:
+		if previous.State != StateValidating || next.State != StateReviewing ||
+			len(next.ResultReopens) != len(previous.ResultReopens)+1 ||
+			len(previous.ResultReopens) > 0 && !reflect.DeepEqual(previous.ResultReopens, next.ResultReopens[:len(previous.ResultReopens)]) {
+			return fmt.Errorf("%w: reviewer result reopen must append one validating-to-reviewing audit record", ErrInvalidSuccessor)
+		}
+		reopen := next.ResultReopens[len(next.ResultReopens)-1]
+		if reopen.PreviousRevision != previousRevision || reopen.TargetIdentity != previous.InitialSnapshot.Identity {
+			return fmt.Errorf("%w: reviewer result reopen does not bind the exact predecessor authority", ErrInvalidSuccessor)
+		}
+		expected := previous
+		expected.State = StateReviewing
+		expected.LensResults = []LensResult{}
+		expected.Findings = []Finding{}
+		expected.Classifications = map[string]FindingEvidence{}
+		expected.Outcomes = map[string]EvidenceOutcome{}
+		expected.FixFindingIDs = []string{}
+		expected.FollowUps = []FollowUp{}
+		expected.ProposedCorrectionLines = nil
+		expected.ActualCorrectionLines = nil
+		expected.FixDeltaHash = EmptyFixDeltaHash
+		expected.OriginalCriteria = nil
+		expected.CorrectionRegression = nil
+		expected.EvidenceHash = ""
+		expected.ResultReopens = next.ResultReopens
+		if !compactStateEqual(expected, next) {
+			return fmt.Errorf("%w: reviewer result reopen changed frozen scope, budget, or unrelated authority", ErrInvalidSuccessor)
 		}
 	case "review/complete-verification":
 		if previous.State != StateValidating || next.State != StateApproved && next.State != StateEscalated || !validSHA256(next.EvidenceHash) {

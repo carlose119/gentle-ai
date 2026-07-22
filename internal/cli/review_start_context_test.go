@@ -122,6 +122,12 @@ func TestNegotiatedReviewStartContextValidationDistinguishesMissingAndEmpty(t *t
 		name   string
 		mutate func(*ReviewIntegrationStartResult)
 	}{
+		{name: "missing artifact subjects", mutate: func(result *ReviewIntegrationStartResult) { result.ArtifactSubjects = nil }},
+		{name: "artifact subject mismatch", mutate: func(result *ReviewIntegrationStartResult) {
+			subjects := append([]reviewtransaction.ArtifactSubject(nil), result.ArtifactSubjects...)
+			subjects[0].SubjectHash = "sha256:" + strings.Repeat("0", 64)
+			result.ArtifactSubjects = subjects
+		}},
 		{name: "missing diff", mutate: func(result *ReviewIntegrationStartResult) { result.CandidateDiff = nil }},
 		{name: "missing manifest", mutate: func(result *ReviewIntegrationStartResult) { result.ChangedPathManifest = nil }},
 		{name: "empty diff for changed path", mutate: func(result *ReviewIntegrationStartResult) {
@@ -190,6 +196,7 @@ func TestNegotiatedReviewStartContextValidationDistinguishesMissingAndEmpty(t *t
 	valid.LensesRequired = false
 	valid.RiskLevel = reviewtransaction.RiskLow
 	valid.SelectedLenses = []string{}
+	valid.ArtifactSubjects = []reviewtransaction.ArtifactSubject{}
 	valid.ChangedFiles = 0
 	valid.ChangedLines = 0
 	valid.CorrectionBudget = 0

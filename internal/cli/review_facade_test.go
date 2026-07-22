@@ -1402,7 +1402,9 @@ func TestReviewSchemaExamplesMatchStrictFacadeContracts(t *testing.T) {
 				if err := readFacadeJSON(path, &value); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := value.compact(reviewtransaction.EmptyFixDeltaHash, []string{}); err != nil {
+				if _, err := value.compact(reviewtransaction.EmptyFixDeltaHash, []string{}, reviewtransaction.TargetedValidationRequest{
+					RequestHash: reviewtransaction.EmptyFixDeltaHash, CorrectionTargetIdentity: reviewtransaction.EmptyFixDeltaHash,
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}

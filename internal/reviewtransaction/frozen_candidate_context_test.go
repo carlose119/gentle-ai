@@ -18,9 +18,10 @@ func TestFrozenCandidateContextUsesImmutableTreesAndCanonicalManifest(t *testing
 	requireSnapshotGit(t)
 	repo := initSnapshotRepo(t)
 	writeSnapshotFile(t, repo, "binary.bin", "base\x00binary\n")
+	writeSnapshotFile(t, repo, "docs/naïve guide.md", "unchanged reference target\n")
 	writeSnapshotFile(t, repo, "mode.sh", "#!/bin/sh\necho stable\n")
 	writeSnapshotFile(t, repo, "type-entry", "regular\n")
-	gitSnapshot(t, repo, "add", "--", "binary.bin", "mode.sh", "type-entry")
+	gitSnapshot(t, repo, "add", "--", "binary.bin", "docs/naïve guide.md", "mode.sh", "type-entry")
 	gitSnapshot(t, repo, "commit", "-m", "add context fixtures")
 
 	writeSnapshotFile(t, repo, "added.txt", "added\n")
@@ -68,6 +69,11 @@ func TestFrozenCandidateContextUsesImmutableTreesAndCanonicalManifest(t *testing
 	}
 	if !reflect.DeepEqual(manifestPaths(baseline.ChangedPathManifest), snapshot.Paths) {
 		t.Fatalf("manifest paths = %v, snapshot paths = %v", manifestPaths(baseline.ChangedPathManifest), snapshot.Paths)
+	}
+	for _, logicalPath := range []string{"added.txt", "deleted.txt", "docs/naïve guide.md", "tracked.txt"} {
+		if stringIndex(baseline.repositoryPaths, logicalPath) < 0 {
+			t.Fatalf("frozen repository path manifest omits %q: %v", logicalPath, baseline.repositoryPaths)
+		}
 	}
 	for _, marker := range []string{
 		"diff --git a/added.txt b/added.txt",
@@ -191,9 +197,7 @@ func TestFrozenCandidateContextIsolatesAllGitAttributesConfigAndLocale(t *testin
 		t.Fatal(err)
 	}
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	if err := os.WriteFile(globalConfig, []byte("[core]\n\tattributesFile = "+globalAttributes+"\n[diff]\n\texternal = false\n\talgorithm = minimal\n\tcontext = 0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFrozenCandidateHostileGitConfig(t, globalConfig, globalAttributes)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	t.Setenv("GIT_DIFF_OPTS", "--unified=0")
 	t.Setenv("LC_ALL", "hostile_INVALID.UTF-8")
@@ -226,6 +230,36 @@ func TestFrozenCandidateContextIsolatesAllGitAttributesConfigAndLocale(t *testin
 	}
 	if !reflect.DeepEqual(replayedStats, baselineStats) {
 		t.Fatalf("frozen diff stats changed under mutable attributes/config/locale\nfirst=%#v\nreplayed=%#v", baselineStats, replayedStats)
+	}
+}
+
+func TestFrozenCandidateHostileGitConfigEscapesWindowsPath(t *testing.T) {
+	requireSnapshotGit(t)
+	config := filepath.Join(t.TempDir(), "gitconfig")
+	windowsPath := `C:\Users\reviewer\global attributes`
+	writeFrozenCandidateHostileGitConfig(t, config, windowsPath)
+	command := exec.Command("git", "config", "--file", config, "--get", "core.attributesFile")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("portable Git config rejected Windows path: %v\n%s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != windowsPath {
+		t.Fatalf("portable Git config path = %q, want %q", got, windowsPath)
+	}
+}
+
+func writeFrozenCandidateHostileGitConfig(t *testing.T, path, attributesFile string) {
+	t.Helper()
+	for _, entry := range [][2]string{
+		{"core.attributesFile", attributesFile},
+		{"diff.external", "false"},
+		{"diff.algorithm", "minimal"},
+		{"diff.context", "0"},
+	} {
+		command := exec.Command("git", "config", "--file", path, entry[0], entry[1])
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("write portable Git config %s: %v\n%s", entry[0], err, output)
+		}
 	}
 }
 

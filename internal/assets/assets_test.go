@@ -431,7 +431,14 @@ func TestReviewResultArtifactsPluginContract(t *testing.T) {
 		`"--repository-context", binding.repository_context`,
 		`"--expected-revision", binding.revision`,
 		`return ["--cwd", cwd]`,
-		`const current = fields === "lens,lineage,order,repository_context,revision,target"`,
+		`const current = fields === "lens,lineage,order,repository_context,revision,subject_hash,target"`,
+		`typeof subject.subject_hash !== "string"`,
+		`subject.subject_hash !== binding.subject_hash`,
+		`const FROZEN_CONTEXT = "GENTLE_AI_FROZEN_CANDIDATE_CONTEXT "`,
+		`artifact_subject`,
+		`candidate_diff`,
+		`changed_path_manifest`,
+		`output.args.prompt = await injectReviewerContext(`,
 		`"--lineage", binding.lineage`,
 		`"--target", binding.target`,
 		`"--lens", binding.lens`,
@@ -441,7 +448,6 @@ func TestReviewResultArtifactsPluginContract(t *testing.T) {
 		`GENTLE_AI_REVIEW_CWD`,
 		`"tool.execute.before"`,
 		`output.args.background === true`,
-		`await preflightCapture(captureCwd(worktree, directory), parseBinding(output.args.prompt, output.args.subagent_type))`,
 		`!BINDING.test(input.args.prompt)`,
 		`const lens = input.args.subagent_type`,
 		`const binding = parseBinding(input.args.prompt, lens)`,
@@ -460,6 +466,14 @@ func TestReviewResultArtifactsPluginContract(t *testing.T) {
 		`parsed.reference`,
 		`raw reviewer result preserved for recovery`,
 		`raw reviewer result could not be preserved`,
+		// The previously conflated empty/nested-envelope branch must throw two
+		// distinct, machine-readable classified errors instead of one free-text
+		// message, and the plugin must thread that class into --class.
+		`"reviewer task result is empty"`,
+		`"reviewer task result contains a nested task envelope"`,
+		`reviewClass`,
+		`extractionClass(cause)`,
+		`"--class"`,
 		// Double failure (capture and preserve both failed) must embed the
 		// bounded raw payload in the thrown error so the transcript retains it.
 		`raw reviewer result follows for manual recovery`,
@@ -475,6 +489,11 @@ func TestReviewResultArtifactsPluginContract(t *testing.T) {
 	}
 	if strings.Contains(source, `.slice("review-".length)`) {
 		t.Fatal("review-result-artifacts.ts must preserve the exact full selected lens; found review- prefix stripping")
+	}
+	// Pin the split: the previously conflated empty/nested-envelope message
+	// must never regress back into one indistinguishable free-text throw.
+	if strings.Contains(source, `reviewer task result is empty or contains a nested envelope`) {
+		t.Fatal("review-result-artifacts.ts regressed to the conflated empty/nested-envelope error message")
 	}
 	for _, forbidden := range []string{"writeFile", "link(", "chmod(", "createHash", "export {", "export const"} {
 		if strings.Contains(source, forbidden) {

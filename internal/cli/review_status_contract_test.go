@@ -96,7 +96,7 @@ func TestNegotiatedReviewStatusReportsFreshStartAndPreservesGlobalStatus(t *test
 		t.Fatalf("negotiated status exposed provider-private field %q: %s", field, first.String())
 	}
 
-	fixture, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "status.fixture.json"))
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "status-v2.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestNegotiatedReviewStatusContractAndSchemasAreStrict(t *testing.T) {
 		name string
 		id   string
 	}{
-		{name: "status.schema.json", id: ReviewIntegrationStatusSchemaID},
+		{name: "status-v2.schema.json", id: ReviewIntegrationStatusSchemaID},
 		{name: "projection.schema.json", id: ReviewIntegrationProjectionSchemaID},
 		{name: "targeted-validation-request.schema.json", id: reviewtransaction.TargetedValidationRequestSchemaID},
 	} {
@@ -179,11 +179,11 @@ func TestNegotiatedReviewStatusContractAndSchemasAreStrict(t *testing.T) {
 		name          string
 		applicability reviewtransaction.TargetApplicability
 	}{
-		{name: "status.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
-		{name: "status-recover.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
-		{name: "status-unrelated.fixture.json", applicability: reviewtransaction.TargetApplicabilityUnrelated},
-		{name: "status-ambiguous.fixture.json", applicability: reviewtransaction.TargetApplicabilityAmbiguous},
-		{name: "status-corrupted.fixture.json", applicability: reviewtransaction.TargetApplicabilityCorrupted},
+		{name: "status-v2.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
+		{name: "status-v2-recover.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
+		{name: "status-v2-unrelated.fixture.json", applicability: reviewtransaction.TargetApplicabilityUnrelated},
+		{name: "status-v2-ambiguous.fixture.json", applicability: reviewtransaction.TargetApplicabilityAmbiguous},
+		{name: "status-v2-corrupted.fixture.json", applicability: reviewtransaction.TargetApplicabilityCorrupted},
 	}
 	for _, item := range fixtures {
 		fixture, readErr := os.ReadFile(filepath.Join(root, "fixtures", item.name))
@@ -391,7 +391,7 @@ func TestNegotiatedReviewFinalizeEligibilityRequiresTargetScopedStatus(t *testin
 
 func assertStatusPayloadMatchesPublishedSchema(t *testing.T, payload []byte) {
 	t.Helper()
-	schemaPath := filepath.Join("..", "..", "contracts", "review-integration", "v1", "schemas", "status.schema.json")
+	schemaPath := filepath.Join("..", "..", "contracts", "review-integration", "v1", "schemas", "status-v2.schema.json")
 	schemaBytes, err := os.ReadFile(schemaPath)
 	if err != nil {
 		t.Fatal(err)
@@ -724,7 +724,7 @@ func TestReviewFinalizeEligibilityCannotPublishRecoveryBinding(t *testing.T) {
 
 func publishedStatusFixtureProjection(t *testing.T) ReviewTargetStatusProjection {
 	t.Helper()
-	payload, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "status.fixture.json"))
+	payload, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "status-v2.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

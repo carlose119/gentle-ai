@@ -24,10 +24,18 @@ func TestRepositoryContextCaptureFromUnrelatedCWDProducesFinalizeArtifact(t *tes
 	if started.RepositoryContext == nil || len(started.SelectedLenses) != 1 {
 		t.Fatalf("START result = %#v", started)
 	}
+	store, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, started.LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	resultPath := filepath.Join(t.TempDir(), "reviewer.json")
-	writeReviewCLIJSON(t, resultPath, facadeReviewerResult{
-		Lens: started.SelectedLenses[0], Findings: []facadeFinding{}, Evidence: []string{"reviewed exact candidate"},
-	})
+	if err := os.WriteFile(resultPath, admittedReviewerPayloadForTest(t, repo, record, started.SelectedLenses[0], 0), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(t.TempDir())
 	bindingArgs := []string{
 		"--repository-context", started.RepositoryContext.Handle,
@@ -92,15 +100,7 @@ func TestRepositoryContextCaptureFromUnrelatedCWDProducesFinalizeArtifact(t *tes
 		!strings.HasPrefix(manifest.Reference, reviewResultReferencePrefix) {
 		t.Fatalf("manifest = %#v", manifest)
 	}
-	store, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, started.LineageID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if results, err := readFacadeReviewerArtifacts([]string{strings.TrimSpace(captured.String())}, store.Dir, record.State); err != nil || len(results) != 1 {
+	if results, err := readFacadeReviewerArtifacts(context.Background(), repo, []string{strings.TrimSpace(captured.String())}, store.Dir, record.State, record.Revision); err != nil || len(results) != 1 {
 		t.Fatalf("provider did not resolve opaque captured-result reference: %v, %#v", err, results)
 	}
 	if err := RunReviewFacadeFinalize([]string{

@@ -588,7 +588,7 @@ func TestCompactStagedCorrectionAcceptsIndexFixDespiteWorkspaceDivergence(t *tes
 	}
 	fixHash := FixDeltaHashForSnapshot(fix)
 	validation := ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{}, OriginalCriteria: ValidationCheck{Passed: true, EvidenceHash: hash("2"), FixDeltaHash: fixHash}, CorrectionRegression: ValidationCheck{Passed: true, EvidenceHash: hash("3"), FixDeltaHash: fixHash}}
-	if err := state.CompleteCorrection(fix, 2, validation); err != nil {
+	if err := state.CompleteCorrection(fix, 2, bindTargetedValidationForTest(validation, fix)); err != nil {
 		t.Fatalf("CompleteCorrection(staged fix) error = %v", err)
 	}
 	if state.State != StateValidating {
@@ -621,7 +621,7 @@ func TestCompactStagedCorrectionRejectsWorkspaceSnapshotWithoutMutatingState(t *
 	}
 	fixHash := FixDeltaHashForSnapshot(workspaceFix)
 	validation := ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{}, OriginalCriteria: ValidationCheck{Passed: true, EvidenceHash: hash("2"), FixDeltaHash: fixHash}, CorrectionRegression: ValidationCheck{Passed: true, EvidenceHash: hash("3"), FixDeltaHash: fixHash}}
-	if err := state.CompleteCorrection(workspaceFix, 1, validation); err == nil || !strings.Contains(err.Error(), "projection") {
+	if err := state.CompleteCorrection(workspaceFix, 1, bindTargetedValidationForTest(validation, workspaceFix)); err == nil || !strings.Contains(err.Error(), "projection") {
 		t.Fatalf("workspace correction error = %v", err)
 	}
 	if !reflect.DeepEqual(state, before) {
@@ -634,7 +634,7 @@ func TestCompactStagedCorrectionRejectsWorkspaceSnapshotWithoutMutatingState(t *
 	}
 	fixHash = FixDeltaHashForSnapshot(stagedFix)
 	validation.OriginalCriteria.FixDeltaHash, validation.CorrectionRegression.FixDeltaHash = fixHash, fixHash
-	if err := state.CompleteCorrection(stagedFix, 0, validation); err == nil || !strings.Contains(err.Error(), "unchanged candidate") {
+	if err := state.CompleteCorrection(stagedFix, 0, bindTargetedValidationForTest(validation, stagedFix)); err == nil || !strings.Contains(err.Error(), "unchanged candidate") {
 		t.Fatalf("unchanged staged correction error = %v", err)
 	}
 	if !reflect.DeepEqual(state, before) {
@@ -815,7 +815,7 @@ func TestStartCompactAuthorityPreservesTerminalFailedValidator(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixHash := FixDeltaHashForSnapshot(fix)
-	if err := state.CompleteCorrection(fix, 1, ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{}, OriginalCriteria: ValidationCheck{Passed: false, EvidenceHash: hash("2"), FixDeltaHash: fixHash}, CorrectionRegression: ValidationCheck{Passed: false, EvidenceHash: hash("3"), FixDeltaHash: fixHash}}); err != nil {
+	if err := state.CompleteCorrection(fix, 1, bindTargetedValidationForTest(ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{}, OriginalCriteria: ValidationCheck{Passed: false, EvidenceHash: hash("2"), FixDeltaHash: fixHash}, CorrectionRegression: ValidationCheck{Passed: false, EvidenceHash: hash("3"), FixDeltaHash: fixHash}}, fix)); err != nil {
 		t.Fatal(err)
 	}
 	revision, err = store.Replace(revision, "review/complete-fix", state)
@@ -1246,7 +1246,7 @@ func TestCompactFirstCompletedValidatorIsTerminal(t *testing.T) {
 			validation := ScopedValidationResult{LedgerIDs: append([]string(nil), state.FixFindingIDs...), FixCausedFindings: []Finding{}, FollowUps: []FollowUp{},
 				OriginalCriteria:     ValidationCheck{EvidenceHash: hash("1"), FixDeltaHash: fixHash, Passed: tt.originalPassed},
 				CorrectionRegression: ValidationCheck{EvidenceHash: hash(tt.regressionEvidence), FixDeltaHash: fixHash, Passed: tt.regressionPassed}}
-			if err := state.CompleteCorrection(fix, 1, validation); err != nil {
+			if err := state.CompleteCorrection(fix, 1, bindTargetedValidationForTest(validation, fix)); err != nil {
 				t.Fatal(err)
 			}
 			if state.State != tt.wantState || state.ProposedCorrectionLines == nil || *state.ProposedCorrectionLines != 1 || state.ActualCorrectionLines == nil || *state.ActualCorrectionLines != 1 ||
@@ -1284,7 +1284,7 @@ func TestCompactMalformedValidatorDoesNotConsumeAuthority(t *testing.T) {
 	validation := ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{},
 		OriginalCriteria:     ValidationCheck{EvidenceHash: "not-a-hash", FixDeltaHash: FixDeltaHashForSnapshot(fix)},
 		CorrectionRegression: ValidationCheck{EvidenceHash: hash("regression"), FixDeltaHash: FixDeltaHashForSnapshot(fix)}}
-	if err := state.CompleteCorrection(fix, 1, validation); err == nil || !reflect.DeepEqual(state, before) {
+	if err := state.CompleteCorrection(fix, 1, bindTargetedValidationForTest(validation, fix)); err == nil || !reflect.DeepEqual(state, before) {
 		t.Fatalf("malformed validator consumed authority: %#v, %v", state, err)
 	}
 }
@@ -1299,7 +1299,7 @@ func TestCompactHistoricalFailedValidatorRecoveryPreservesPredecessor(t *testing
 	failed := ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{},
 		OriginalCriteria:     ValidationCheck{EvidenceHash: hash("2"), FixDeltaHash: fixHash, Passed: true},
 		CorrectionRegression: ValidationCheck{EvidenceHash: hash("3"), FixDeltaHash: fixHash}}
-	if err := state.CompleteCorrection(fix, 1, failed); err != nil {
+	if err := state.CompleteCorrection(fix, 1, bindTargetedValidationForTest(failed, fix)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(filepath.Join(repo, "tracked.txt"), 0o755); err != nil {
@@ -1578,7 +1578,7 @@ func TestCompactActualCumulativeOverflowPersistsTerminalAttempt(t *testing.T) {
 	actual := state.CorrectionBudget + 1
 	fixHash := FixDeltaHashForSnapshot(fix)
 	validation := ScopedValidationResult{LedgerIDs: state.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{}, OriginalCriteria: ValidationCheck{EvidenceHash: hash("2"), FixDeltaHash: fixHash, Passed: true}, CorrectionRegression: ValidationCheck{EvidenceHash: hash("3"), FixDeltaHash: fixHash, Passed: true}}
-	if err := state.CompleteCorrection(fix, actual, validation); err != nil {
+	if err := state.CompleteCorrection(fix, actual, bindTargetedValidationForTest(validation, fix)); err != nil {
 		t.Fatal(err)
 	}
 	if state.State != StateEscalated || state.CumulativeCorrectionLines <= state.CorrectionBudget || len(state.CorrectionAttempts) != 1 {
@@ -2270,7 +2270,7 @@ func correctedCompactTestStateWithIntended(t *testing.T, repo, lineage string, i
 		OriginalCriteria:     ValidationCheck{EvidenceHash: hash("2"), FixDeltaHash: fixHash, Passed: true},
 		CorrectionRegression: ValidationCheck{EvidenceHash: hash("3"), FixDeltaHash: fixHash, Passed: true},
 	}
-	if err := state.CompleteCorrection(fix, 2, validation); err != nil {
+	if err := state.CompleteCorrection(fix, 2, bindTargetedValidationForTest(validation, fix)); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.CompleteVerification([]byte("tests pass\n"), true); err != nil {
@@ -2279,6 +2279,12 @@ func correctedCompactTestStateWithIntended(t *testing.T, repo, lineage string, i
 	// Preserve the legacy compact fixture shape for backward-compatibility tests.
 	state.CorrectionAttempts, state.CumulativeCorrectionLines = nil, 0
 	return state
+}
+
+func bindTargetedValidationForTest(validation ScopedValidationResult, fix Snapshot) ScopedValidationResult {
+	validation.TargetedValidationRequestHash = hash("9")
+	validation.CorrectionTargetIdentity = fix.Identity
+	return validation
 }
 
 func newCompactRevisionState(t *testing.T, repo, lineage string) CompactState {

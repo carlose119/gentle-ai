@@ -16,7 +16,7 @@ import (
 const capabilityFixtureExecutable = "gentle-ai capability fixture\n"
 
 func TestReviewCapabilitiesMatchesConformanceFixtureOutsideRepository(t *testing.T) {
-	fixturePath, err := filepath.Abs(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "capabilities-v1.2.fixture.json"))
+	fixturePath, err := filepath.Abs(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "capabilities-v1.3.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestReviewCapabilitiesMatchesConformanceFixtureOutsideRepository(t *testing
 	if err := result.Validate(); err != nil {
 		t.Fatalf("capabilities validation: %v", err)
 	}
-	if result.Protocol != (ReviewCapabilitiesProtocol{Major: 1, Minor: 2}) ||
+	if result.Protocol != (ReviewCapabilitiesProtocol{Major: 1, Minor: 3}) ||
 		!slices.ContainsFunc(result.Features.Optional, func(feature ReviewCapabilityFeature) bool {
 			return feature.Name == "native_frozen_candidate_context" && feature.Supported && slices.Equal(feature.Requires, []string{"immutable_snapshot"})
 		}) {
@@ -160,7 +160,7 @@ func TestReviewCapabilitiesAdvertisesOnlyNativeSurface(t *testing.T) {
 
 func TestReviewCapabilitiesSchemaAndFixtureAreStrict(t *testing.T) {
 	root := filepath.Join("..", "..", "contracts", "review-integration", "v1")
-	schemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "capabilities-v1.2.schema.json"))
+	schemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "capabilities-v1.3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestReviewCapabilitiesSchemaAndFixtureAreStrict(t *testing.T) {
 	if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema" || schema["$id"] != ReviewIntegrationCapabilitiesSchemaID || schema["additionalProperties"] != false {
 		t.Fatalf("capabilities schema header = %#v", schema)
 	}
-	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "capabilities-v1.2.fixture.json"))
+	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "capabilities-v1.3.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,6 +241,17 @@ func TestReviewCapabilitiesVersionsKeepV1ReadableAndFailClosedAcrossSchemas(t *t
 	if v11Schema["$id"] != ReviewIntegrationCapabilitiesSchemaIDV11 {
 		t.Fatalf("v1.1 capabilities schema identity = %#v", v11Schema["$id"])
 	}
+	v12SchemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "capabilities-v1.2.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v12Schema map[string]any
+	if err := json.Unmarshal(v12SchemaPayload, &v12Schema); err != nil {
+		t.Fatal(err)
+	}
+	if v12Schema["$id"] != ReviewIntegrationCapabilitiesSchemaIDV12 {
+		t.Fatalf("v1.2 capabilities schema identity = %#v", v12Schema["$id"])
+	}
 	legacyFixture, err := os.ReadFile(filepath.Join(root, "fixtures", "capabilities.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -249,7 +260,11 @@ func TestReviewCapabilitiesVersionsKeepV1ReadableAndFailClosedAcrossSchemas(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentFixture, err := os.ReadFile(filepath.Join(root, "fixtures", "capabilities-v1.2.fixture.json"))
+	v12Fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "capabilities-v1.2.fixture.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentFixture, err := os.ReadFile(filepath.Join(root, "fixtures", "capabilities-v1.3.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,8 +288,11 @@ func TestReviewCapabilitiesVersionsKeepV1ReadableAndFailClosedAcrossSchemas(t *t
 	if err := validateLegacy(v11Fixture); err == nil {
 		t.Fatal("legacy consumer accepted unknown v1.1 capabilities schema")
 	}
-	if err := validateLegacy(currentFixture); err == nil {
+	if err := validateLegacy(v12Fixture); err == nil {
 		t.Fatal("legacy consumer accepted unknown v1.2 capabilities schema")
+	}
+	if err := validateLegacy(currentFixture); err == nil {
+		t.Fatal("legacy consumer accepted unknown v1.3 capabilities schema")
 	}
 	validateV11 := func(payload []byte) error {
 		var value identity
@@ -289,23 +307,42 @@ func TestReviewCapabilitiesVersionsKeepV1ReadableAndFailClosedAcrossSchemas(t *t
 	if err := validateV11(v11Fixture); err != nil {
 		t.Fatalf("v1.1 consumer rejected v1.1 artifact: %v", err)
 	}
-	if err := validateV11(currentFixture); err == nil {
+	if err := validateV11(v12Fixture); err == nil {
 		t.Fatal("v1.1 consumer accepted unknown v1.2 capabilities schema")
+	}
+	if err := validateV11(currentFixture); err == nil {
+		t.Fatal("v1.1 consumer accepted unknown v1.3 capabilities schema")
+	}
+	validateV12 := func(payload []byte) error {
+		var value identity
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return err
+		}
+		if value.Schema != ReviewIntegrationCapabilitiesSchemaV12 || value.Protocol != (ReviewCapabilitiesProtocol{Major: 1, Minor: 2}) {
+			return errors.New("unknown v1.2 capabilities schema")
+		}
+		return nil
+	}
+	if err := validateV12(v12Fixture); err != nil {
+		t.Fatalf("v1.2 consumer rejected v1.2 artifact: %v", err)
+	}
+	if err := validateV12(currentFixture); err == nil {
+		t.Fatal("v1.2 consumer accepted unknown v1.3 capabilities schema")
 	}
 	var current ReviewCapabilitiesResult
 	if err := json.Unmarshal(currentFixture, &current); err != nil {
 		t.Fatal(err)
 	}
 	if err := current.Validate(); err != nil {
-		t.Fatalf("v1.2 consumer rejected negotiated artifact: %v", err)
+		t.Fatalf("v1.3 consumer rejected negotiated artifact: %v", err)
 	}
-	for name, payload := range map[string][]byte{"v1.0": legacyFixture, "v1.1": v11Fixture} {
+	for name, payload := range map[string][]byte{"v1.0": legacyFixture, "v1.1": v11Fixture, "v1.2": v12Fixture} {
 		var previous ReviewCapabilitiesResult
 		if err := json.Unmarshal(payload, &previous); err != nil {
 			t.Fatal(err)
 		}
 		if err := previous.Validate(); err == nil {
-			t.Fatalf("v1.2 consumer accepted %s artifact without explicit negotiation", name)
+			t.Fatalf("v1.3 consumer accepted %s artifact without explicit negotiation", name)
 		}
 	}
 }
@@ -388,9 +425,12 @@ func TestReviewCapabilitiesFeatureRequirementsAreExplicit(t *testing.T) {
 		{Name: "native_low_risk_verification", Supported: true, Requires: []string{"compact_v2_authority"}},
 		{Name: "native_next_transition", Supported: true, Requires: []string{"target_scoped_status"}},
 		{Name: "opaque_repository_context", Supported: true, Requires: []string{"compact_v2_authority", "native_next_transition"}},
+		{Name: "provider_artifact_admission", Supported: true, Requires: []string{"compact_v2_authority", "native_frozen_candidate_context", "opaque_repository_context"}},
 		{Name: "provider_targeted_validation_request", Supported: true, Requires: []string{"compact_v2_authority", "native_next_transition"}},
+		{Name: "recovered_correction_evidence", Supported: true, Requires: []string{"compact_v2_authority", "provider_targeted_validation_request"}},
 		{Name: "risk_reasons", Supported: true, Requires: []string{"repository_independent_capabilities"}},
 		{Name: "scope_change_diagnostics", Supported: true, Requires: []string{"uniform_failure_envelope"}},
+		{Name: "validating_result_reopen", Supported: true, Requires: []string{"compact_v2_authority", "provider_artifact_admission"}},
 	}
 	if !reflect.DeepEqual(result.Features.Mandatory, wantMandatory) || !reflect.DeepEqual(result.Features.Optional, wantOptional) {
 		t.Fatalf("feature requirements = %#v", result.Features)
@@ -429,11 +469,13 @@ func TestReviewIntegrationDocumentationMatchesRuntimeContract(t *testing.T) {
 	document := string(payload)
 	for _, required := range []string{
 		"`stop`", "`legacy_v1_read_only`", "`mutation_outcome`", "`not_started`", "`unknown`", "`committed`",
-		"ten strict JSON Schemas", "eleven deterministic conformance fixtures",
+		"sixteen strict JSON Schemas", "eighteen deterministic conformance fixtures",
 		"Legacy-v1 never reports `publication_pending`", "retry and replay disabled",
 		"Historical `ordinary_4r` legacy status omits `frozen`", "START, finalize, BIND-SDD, invalidation, and direct append",
 		"`native_frozen_candidate_context`", "`candidate_diff`", "`changed_path_manifest`",
 		"`opaque_repository_context`", "`provider_targeted_validation_request`",
+		"`provider_artifact_admission`", "`validating_result_reopen`", "`recovered_correction_evidence`",
+		"`artifact_subjects`", "`subject_hash`", "`admission_decision: completed`",
 		"`native_low_risk_verification`", "`selected_lenses: []`", "`receipt_scope_changed`",
 		"25-second aggregate budget", "15-second budget", "20-second budget", "one-second wait delay",
 		"Persistent compact `LOCK` JSON is advisory diagnostics", "`context.scope_change`", "`review.recover`",
@@ -442,7 +484,7 @@ func TestReviewIntegrationDocumentationMatchesRuntimeContract(t *testing.T) {
 			t.Fatalf("review integration documentation is missing %q", required)
 		}
 	}
-	for _, stale := range []string{"five strict JSON Schemas", "nine strict JSON Schemas", "four deterministic conformance fixtures"} {
+	for _, stale := range []string{"five strict JSON Schemas", "nine strict JSON Schemas", "ten strict JSON Schemas", "four deterministic conformance fixtures", "eleven deterministic conformance fixtures"} {
 		if strings.Contains(document, stale) {
 			t.Fatalf("review integration documentation retains stale claim %q", stale)
 		}

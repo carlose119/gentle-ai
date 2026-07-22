@@ -46,7 +46,7 @@ func TestNegotiatedReviewStartMatchesVersionedFixture(t *testing.T) {
 		result.RepositoryContext == nil || result.RepositoryContext.Capability != reviewtransaction.ReviewRepositoryContextCapability {
 		t.Fatalf("negotiated START = %#v\n%s", result, output.String())
 	}
-	fixture, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "start.fixture.json"))
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "start-v2.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,7 +817,7 @@ func TestExplicitReviewStartRetriesAcrossSharedCommonDirWithoutReconstruction(t 
 
 func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 	root := filepath.Join("..", "..", "contracts", "review-integration", "v1")
-	schemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "start.schema.json"))
+	schemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "start-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -842,7 +842,7 @@ func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 	if candidateDiffSchema["$ref"] != "#/$defs/frozen_candidate_diff" {
 		t.Fatalf("START candidate_diff schema = %#v", candidateDiffSchema)
 	}
-	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "start.fixture.json"))
+	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "start-v2.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

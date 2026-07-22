@@ -88,6 +88,23 @@ func buildTargetedValidationRequest(ctx context.Context, repo string, state Comp
 	if err := pathsAreSubset(fix.Paths, state.GenesisPaths); err != nil {
 		return TargetedValidationRequest{}, err
 	}
+	return targetedValidationRequestForCorrection(state, revision, fix)
+}
+
+// targetedValidationRequestForCorrection binds a repository-validated fix
+// snapshot to an exact authority revision. Recovery uses the same constructor
+// to attest imported historical validator evidence without inventing a second
+// correction-subject format.
+func targetedValidationRequestForCorrection(state CompactState, revision string, fix Snapshot) (TargetedValidationRequest, error) {
+	snapshotProjection, err := canonicalProjection(state.InitialSnapshot.Projection)
+	if err != nil || !validSHA256(revision) || fix.Kind != TargetFixDiff || fix.Projection != snapshotProjection ||
+		!equalStrings(fix.LedgerIDs, state.FixFindingIDs) || pathsAreSubset(fix.Paths, state.GenesisPaths) != nil {
+		return TargetedValidationRequest{}, errors.New("targeted validation request correction binding is invalid")
+	}
+	projection := snapshotProjection
+	if projection == "" {
+		projection = ProjectionWorkspace
+	}
 	request := TargetedValidationRequest{
 		Schema: TargetedValidationRequestSchema, LineageID: state.LineageID, ExpectedRevision: revision,
 		TargetIdentity: state.InitialSnapshot.Identity, FixFindingIDs: append([]string(nil), state.FixFindingIDs...),
